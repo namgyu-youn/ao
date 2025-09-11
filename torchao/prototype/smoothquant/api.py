@@ -10,9 +10,6 @@ from typing import Optional
 import torch
 
 from torchao.core.config import AOBaseConfig
-from torchao.quantization.linear_activation_scale import (
-    to_weight_tensor_with_linear_activation_scale_metadata,
-)
 from torchao.quantization.quant_api import (
     _QUANTIZE_CONFIG_HANDLER,
     _linear_extra_repr,
@@ -117,9 +114,7 @@ def _smooth_quant_transform(
     qw = quant_mod.weight
 
     # Add smoothing factor metadata
-    qw = to_weight_tensor_with_linear_activation_scale_metadata(
-        qw, smoothing_factor.to(qw.dtype)
-    )
+    setattr(qw, 'act_pre_scale', 1.0 / smoothing_factor)
     linear.weight = torch.nn.Parameter(qw, requires_grad=False)
     linear.extra_repr = types.MethodType(_linear_extra_repr, linear)
 
