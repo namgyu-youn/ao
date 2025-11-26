@@ -2258,25 +2258,30 @@ def _choose_qparams_and_quantize_scale_only_sinq(
     W = W.reshape(-1, group_size)  # [N*num_groups, group_size]
 
     # Algorithm 1: Sinkhorn Normalization
-    q_min = min(W.std(dim=0).min().item(), W.std(dim=1).min().item())
-    q_min = max(q_min, 1e-8)
+    sigma_min = min(W.std(dim=0).min().item(), W.std(dim=1).min().item())
+    sigma_min = max(sigma_min, 1e-8)
 
+    # Scale factor is iteratively accumulated
     W_hat = W.clone()
-    scale_col_sinkhorn = torch.ones(W.shape[1], device=W.device, dtype=compute_dtype)
-    scale_row_sinkhorn = torch.ones(W.shape[0], device=W.device, dtype=compute_dtype)
+    log_scale_col = torch.zeros(W.shape[1], device=W.device, dtype=compute_dtype)
+    log_scale_row = torch.zeros(W.shape[0], device=W.device, dtype=compute_dtype)
 
     for _ in range(niter):
-        # Normalize columns (dim=0)
-        q_col = W_hat.std(dim=0) / q_min
-        q_col = torch.clamp(q_col, min=1e-8)
-        W_hat = W_hat / q_col.unsqueeze(0)
-        scale_col_sinkhorn = scale_col_sinkhorn * q_col
+        sigma_0 = W_hat.std(dim=0) / sigma_min
+        sigma_1 = W_hat.std(dim=1) / sigma_min
 
-        # Normalize rows (dim=1)
-        q_row = W_hat.std(dim=1) / q_min
-        q_row = torch.clamp(q_row, min=1e-8)
-        W_hat = W_hat / q_row.unsqueeze(1)
-        scale_row_sinkhorn = scale_row_sinkhorn * q_row
+        sigma_0 = torch.clamp(sigma_0, min=1e-8)
+        sigma_1 = torch.clamp(sigma_1, min=1e-8)
+
+        W_hat = W_hat / sigma_0.unsqueeze(0)
+        log_scale_col = log_scale_col + torch.log(sigma_0)
+
+        W_hat = W_hat / sigma_1.unsqueeze(1)
+        log_scale_row = log_scale_row + torch.log(sigma_1)
+
+    # Convert back from log domain
+    scale_col_sinkhorn = torch.exp(log_scale_col)
+    scale_row_sinkhorn = torch.exp(log_scale_row)
 
     # INT8 symmetric quantization
     # TODO: Consider custom bitwidth for SIMD acceleration like vadd4
@@ -2288,12 +2293,13 @@ def _choose_qparams_and_quantize_scale_only_sinq(
     # in Tensor Core directly, requiring INT8 to FP16 ops.
     qdata = Q.view(shape).contiguous().to(torch.int8)
 
-    # Combine RTN scale with row Sinkhorn factor
-    scale_row = (
-        (scale_s.view(-1) * scale_row_sinkhorn).view(shape[0], -1).to(compute_dtype)
-    )
     num_groups = shape[1] // group_size
-    scale_col = scale_col_sinkhorn.repeat(num_groups)[: shape[1]].to(compute_dtype)
+    scale_row = (
+        (scale_s.view(-1) * scale_row_sinkhorn)
+        .view(shape[0], num_groups)
+        .to(compute_dtype)
+    )
+    scale_col = scale_col_sinkhorn.to(compute_dtype)  # shape: [group_size]
 
     return qdata, scale_row, scale_col
 
