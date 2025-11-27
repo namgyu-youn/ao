@@ -267,6 +267,29 @@ quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 """
 
+_int8_int4_sinq_quant_code = """
+from torchao.quantization.quant_api import (
+    IntxWeightOnlyConfig,
+    Int8DynamicActivationIntxWeightConfig,
+    ModuleFqnToConfig,
+)
+from torchao.quantization.granularity import PerGroup,
+embedding_config = IntxWeightOnlyConfig(
+    weight_dtype=torch.int8,
+    granularity=PerGroup(32),
+    intx_choose_qparams_algorithm="sinq_scale_only",
+)
+linear_config = Int8DynamicActivationIntxWeightConfig(
+    weight_dtype=torch.int4,
+    weight_granularity=PerGroup(32),
+    intx_choose_qparams_algorithm="sinq_scale_only",
+)
+quant_config = ModuleFqnToConfig({{"_default": linear_config, "model.embed_tokens": embedding_config}})
+quantization_config = TorchAoConfig(quant_type=quant_config, include_input_output_embeddings=True, modules_to_not_convert=[])
+quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", torch_dtype=torch.bfloat16, quantization_config=quantization_config)
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+"""
+
 
 _smoothquant_int8_int8_quant_code = """
 from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
@@ -650,7 +673,7 @@ def quantize_and_upload(
     push_to_user_id: str,
     populate_model_card_template: bool,
 ):
-    is_mobile = quant in ["INT8-INT4", "INT8-INT4-HQQ"]
+    is_mobile = quant in ["INT8-INT4", "INT8-INT4-HQQ", "INT8-INT4-SINQ"]
 
     quant_to_config = {
         "FP8": Float8DynamicActivationFloat8WeightConfig(granularity=PerRow()),
@@ -685,6 +708,20 @@ def quantize_and_upload(
                 ),
             }
         ),
+        "INT8-INT4-SINQ": ModuleFqnToConfig(
+            {
+                "_default": Int8DynamicActivationIntxWeightConfig(
+                    weight_dtype=torch.int4,
+                    weight_granularity=PerGroup(32),
+                    intx_choose_qparams_algorithm="sinq_scale_only",
+                ),
+                "model.embed_tokens": IntxWeightOnlyConfig(
+                    weight_dtype=torch.int8,
+                    granularity=PerGroup(32),
+                    intx_choose_qparams_algorithm="sinq_scale_only",
+                ),
+            }
+        ),
         "SmoothQuant-INT8-INT8": Int8DynamicActivationInt8WeightConfig(),
     }
 
@@ -693,6 +730,7 @@ def quantize_and_upload(
         "INT4": _int4_quant_code,
         "INT8-INT4": _int8_int4_quant_code,
         "INT8-INT4-HQQ": _int8_int4_hqq_quant_code,
+        "INT8-INT4-SINQ": _int8_int4_sinq_quant_code,
         "AWQ-INT4": _awq_int4_quant_code,
         "SmoothQuant-INT8-INT8": _smoothquant_int8_int8_quant_code,
     }
@@ -881,7 +919,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--quant",
         type=str,
-        help="Quantization method. Options are FP8, INT4, INT8-INT4, INT8-INT4-HQQ, AWQ-INT4, SmoothQuant-INT8-INT8",
+        help="Quantization method. Options are FP8, INT4, INT8-INT4, INT8-INT4-HQQ, INT8-INT4-SINQ, AWQ-INT4, SmoothQuant-INT8-INT8",
     )
     parser.add_argument(
         "--tasks",
