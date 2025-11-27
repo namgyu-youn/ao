@@ -180,7 +180,9 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
             self.block_size,
             dtype,
             self.activation_quantization,
-            second_scale=self.second_scale if self.second_scale is not None else None,
+            second_scale=self.second_scale.to(device=device, dtype=dtype)
+            if self.second_scale is not None
+            else None,
         )
 
     @classmethod
@@ -306,7 +308,7 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
         if self.second_scale is not None:
             # Expand scale_col from [group_size] to [in_features]
             num_groups = self.scale.shape[1]
-            scale_col_expanded = self.scale_col.repeat(num_groups)
+            scale_col_expanded = self.second_scale.repeat(num_groups)
 
             # Expand scale_row from [num_rows, num_groups] to [num_rows, in_features]
             scale_row_expanded = self.scale.repeat_interleave(self.block_size[1], dim=1)
@@ -319,16 +321,27 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
                 self.block_size[1], dim=1
             )
 
-        return dequantize_affine(
-            self.qdata,
-            self.block_size if self.scale is None else (1, 1),
-            self.scale if self.scale is not None else combined_scale,
-            self.zero_point if self.zero_point is not None else combined_zero_point,
-            torch.int8,
-            qmin,
-            qmax,
-            output_dtype=self.dtype,
-        )
+            return dequantize_affine(
+                self.qdata,
+                (1, 1),
+                combined_scale,
+                combined_zero_point,
+                torch.int8,
+                qmin,
+                qmax,
+                output_dtype=self.dtype,
+            )
+        else:
+            return dequantize_affine(
+                self.qdata,
+                self.block_size,
+                self.scale,
+                self.zero_point,
+                torch.int8,
+                qmin,
+                qmax,
+                output_dtype=self.dtype,
+            )
 
 
 def _apply_int8_act_asym_per_token_quant_dequant(hp_tensor):
