@@ -229,7 +229,7 @@ from torchao.quantization.quant_api import (
     Int8DynamicActivationIntxWeightConfig,
     ModuleFqnToConfig,
 )
-from torchao.quantization.granularity import PerGroup, PerAxis
+from torchao.quantization.granularity import PerGroup PerAxis
 embedding_config = IntxWeightOnlyConfig(
     weight_dtype=torch.int8,
     granularity=PerAxis(0),
@@ -250,7 +250,7 @@ from torchao.quantization.quant_api import (
     Int8DynamicActivationIntxWeightConfig,
     ModuleFqnToConfig,
 )
-from torchao.quantization.granularity import PerGroup, PerAxis
+from torchao.quantization.granularity import PerGroup PerAxis
 embedding_config = IntxWeightOnlyConfig(
     weight_dtype=torch.int8,
     granularity=PerAxis(0),
@@ -273,7 +273,7 @@ from torchao.quantization.quant_api import (
     Int8DynamicActivationIntxWeightConfig,
     ModuleFqnToConfig,
 )
-from torchao.quantization.granularity import PerGroup,
+from torchao.quantization.granularity import PerGroup
 embedding_config = IntxWeightOnlyConfig(
     weight_dtype=torch.int8,
     granularity=PerGroup(32),
