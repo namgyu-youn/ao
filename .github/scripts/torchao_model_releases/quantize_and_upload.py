@@ -38,34 +38,46 @@ def _get_username():
 
 def _untie_weights_and_save_locally(model_id):
     untied_model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype="auto", device_map="auto"
+        model_id,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
     )
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     from transformers.modeling_utils import find_tied_parameters
 
-    if getattr(
-        untied_model.config.get_text_config(decoder=True), "tie_word_embeddings"
-    ):
-        setattr(
-            untied_model.config.get_text_config(decoder=True),
-            "tie_word_embeddings",
-            False,
-        )
+    # Gemma3 호환성을 위한 안전한 config 접근
+    try:
+        text_config = untied_model.config.get_text_config(decoder=True)
+    except:
+        text_config = untied_model.config
+
+    if getattr(text_config, "tie_word_embeddings", False):
+        setattr(text_config, "tie_word_embeddings", False)
 
     untied_model._tied_weights_keys = []
-    untied_model.lm_head.weight = torch.nn.Parameter(
-        untied_model.lm_head.weight.clone()
-    )
+
+    # lm_head weight가 존재하는지 확인
+    if hasattr(untied_model, "lm_head") and hasattr(untied_model.lm_head, "weight"):
+        untied_model.lm_head.weight = torch.nn.Parameter(
+            untied_model.lm_head.weight.clone()
+        )
 
     print("tied weights:", find_tied_parameters(untied_model))
 
     MODEL_NAME = model_id.split("/")[-1]
-    # save locally
     save_to_local_path = f"{MODEL_NAME}-untied-weights"
-    untied_model.save_pretrained(save_to_local_path)
+
+    # GPU 메모리 정리 후 저장
+    torch.cuda.empty_cache()
+
+    untied_model.save_pretrained(
+        save_to_local_path,
+        max_shard_size="2GB",  # 샤드 크기 제한
+    )
     tokenizer.save_pretrained(save_to_local_path)
+
     return save_to_local_path
 
 
@@ -335,7 +347,7 @@ from torchao._models._eval import TransformerEvalWrapper
 model = AutoModelForCausalLM.from_pretrained(
     model_to_quantize,
     device_map="auto",
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
 )
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -821,7 +833,7 @@ def quantize_and_upload(
         quantized_model = AutoModelForCausalLM.from_pretrained(
             model_to_quantize,
             device_map="auto",
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             quantization_config=quantization_config,
         )
         tokenizer = AutoTokenizer.from_pretrained(model_id)
