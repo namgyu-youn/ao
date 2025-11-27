@@ -947,7 +947,7 @@ def _int8_dynamic_activation_intx_weight_transform(
 ) -> torch.nn.Module:
     new_weight, new_bias = _int8_dynamic_activation_intx_weight_quantize_tensor(
         module.weight,
-        module.bias,
+        getattr(module, "bias", None),
         config,
         custom_scale=custom_scale,
         custom_zero_point=custom_zero_point,
@@ -2835,7 +2835,7 @@ def _unwrap_float8_linear(module: Float8Linear) -> nn.Linear:
     with torch.device("meta"):
         new_module = nn.Linear(module.in_features, module.out_features)
     new_module.weight = module.weight
-    new_module.bias = module.bias
+    new_module.bias = getattr(module, "bias", None)
     return new_module
 
 
