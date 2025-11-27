@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import gc
+from contextlib import contextmanager
 from typing import List
 
 import torch
@@ -29,6 +31,93 @@ from torchao.quantization import (
     quantize_,
 )
 
+# ============= Memory Management Utilities =============
+
+
+def cleanup_gpu_memory():
+    """
+    Comprehensive GPU memory cleanup utility.
+    Performs garbage collection and clears CUDA cache.
+    """
+    if torch.cuda.is_available():
+        # Run Python garbage collector
+        gc.collect()
+        # Clear CUDA cache
+        torch.cuda.empty_cache()
+        # Synchronize to ensure cleanup is complete
+        torch.cuda.synchronize()
+
+
+def get_gpu_memory_stats(device_id=0):
+    """
+    Get current GPU memory statistics.
+
+    Args:
+        device_id: CUDA device ID (default: 0)
+
+    Returns:
+        dict: Memory statistics including allocated, reserved, and free memory
+    """
+    if not torch.cuda.is_available():
+        return {"error": "CUDA not available"}
+
+    allocated = torch.cuda.memory_allocated(device_id) / 1e9  # Convert to GB
+    reserved = torch.cuda.memory_reserved(device_id) / 1e9
+    total = torch.cuda.get_device_properties(device_id).total_memory / 1e9
+    free = total - allocated
+
+    return {
+        "allocated_gb": f"{allocated:.2f}",
+        "reserved_gb": f"{reserved:.2f}",
+        "free_gb": f"{free:.2f}",
+        "total_gb": f"{total:.2f}",
+    }
+
+
+def log_gpu_memory(stage_name=""):
+    """
+    Log current GPU memory usage with optional stage name.
+
+    Args:
+        stage_name: Optional name of the current processing stage
+    """
+    if not torch.cuda.is_available():
+        print("GPU memory logging: CUDA not available")
+        return
+
+    stats = get_gpu_memory_stats()
+    stage_prefix = f"[{stage_name}] " if stage_name else ""
+    print(
+        f"{stage_prefix}GPU Memory - Allocated: {stats['allocated_gb']}GB, "
+        f"Reserved: {stats['reserved_gb']}GB, Free: {stats['free_gb']}GB, "
+        f"Total: {stats['total_gb']}GB"
+    )
+
+
+@contextmanager
+def managed_gpu_memory(stage_name=""):
+    """
+    Context manager for automatic GPU memory cleanup.
+    Cleans up memory before and after the context block.
+
+    Args:
+        stage_name: Optional name for logging purposes
+
+    Example:
+        with managed_gpu_memory("Model Loading"):
+            model = load_model()
+    """
+    # Cleanup before
+    cleanup_gpu_memory()
+    log_gpu_memory(f"Before {stage_name}")
+
+    try:
+        yield
+    finally:
+        # Cleanup after
+        cleanup_gpu_memory()
+        log_gpu_memory(f"After {stage_name}")
+
 
 def _get_username():
     token = get_token()
@@ -37,6 +126,10 @@ def _get_username():
 
 
 def _untie_weights_and_save_locally(model_id):
+    # Clean up memory before loading model
+    cleanup_gpu_memory()
+    log_gpu_memory("Before untying weights - Model Loading")
+
     untied_model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
@@ -69,14 +162,19 @@ def _untie_weights_and_save_locally(model_id):
     MODEL_NAME = model_id.split("/")[-1]
     save_to_local_path = f"{MODEL_NAME}-untied-weights"
 
-    # GPU 메모리 정리 후 저장
-    torch.cuda.empty_cache()
+    # Clean up memory before saving
+    cleanup_gpu_memory()
+    log_gpu_memory("Before saving untied model")
 
     untied_model.save_pretrained(
         save_to_local_path,
         max_shard_size="2GB",  # 샤드 크기 제한
     )
     tokenizer.save_pretrained(save_to_local_path)
+
+    # Clean up after saving
+    cleanup_gpu_memory()
+    log_gpu_memory("After untying weights")
 
     return save_to_local_path
 
@@ -129,7 +227,7 @@ model_to_quantize = "{untied_model}"
 USER_ID = "YOUR_USER_ID"
 MODEL_NAME = model_id.split("/")[-1]
 save_to = f"{{USER_ID}}/{{MODEL_NAME}}-{quant}"
-quantized_model.push_to_hub(save_to, safe_serialization=False)
+quantized_model.push_to_hub(save_to, safe_serialization=True)
 tokenizer.push_to_hub(save_to)
 
 # Manual Testing
@@ -760,6 +858,11 @@ def quantize_and_upload(
     if "AWQ" in quant:
         # awq will use torchao API directly
         assert quant == "AWQ-INT4", "Only support AWQ-INT4 for now"
+
+        # Clean up memory before loading model
+        cleanup_gpu_memory()
+        log_gpu_memory("Before AWQ Model Loading")
+
         model = AutoModelForCausalLM.from_pretrained(
             model_to_quantize,
             device_map="auto",
@@ -767,6 +870,8 @@ def quantize_and_upload(
             max_memory={i: "20GiB" for i in range(8)},
         )
         tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+        log_gpu_memory("After AWQ Model Loading")
 
         base_config = Int4WeightOnlyConfig(
             group_size=128,
@@ -778,6 +883,9 @@ def quantize_and_upload(
             model,
             quant_config,
         )
+
+        log_gpu_memory("After AWQ Prepare")
+
         TransformerEvalWrapper(
             model=model,
             tokenizer=tokenizer,
@@ -786,13 +894,26 @@ def quantize_and_upload(
             tasks=tasks,
             limit=calibration_limit,
         )
+
+        # Clean up after calibration
+        cleanup_gpu_memory()
+        log_gpu_memory("After AWQ Calibration")
+
         quant_config = AWQConfig(base_config, step="convert")
         quantize_(model, quant_config)
 
         quantized_model = model
         quant_config = AWQConfig(base_config, step="prepare_for_loading")
         quantized_model.config.quantization_config = TorchAoConfig(quant_config)
+
+        # Clean up after quantization
+        cleanup_gpu_memory()
+        log_gpu_memory("After AWQ Quantization")
     elif quant == "SmoothQuant-INT8-INT8":
+        # Clean up memory before loading model
+        cleanup_gpu_memory()
+        log_gpu_memory("Before SmoothQuant Model Loading")
+
         model = AutoModelForCausalLM.from_pretrained(
             model_to_quantize,
             device_map="auto",
@@ -801,12 +922,17 @@ def quantize_and_upload(
         )
         tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+        log_gpu_memory("After SmoothQuant Model Loading")
+
         base_config = Int8DynamicActivationInt8WeightConfig()
         quant_config = SmoothQuantConfig(base_config, step="prepare")
         quantize_(
             model,
             quant_config,
         )
+
+        log_gpu_memory("After SmoothQuant Prepare")
+
         TransformerEvalWrapper(
             model=model,
             tokenizer=tokenizer,
@@ -815,6 +941,11 @@ def quantize_and_upload(
             tasks=tasks,
             limit=calibration_limit,
         )
+
+        # Clean up after calibration
+        cleanup_gpu_memory()
+        log_gpu_memory("After SmoothQuant Calibration")
+
         quant_config = SmoothQuantConfig(base_config, step="convert")
         quantize_(model, quant_config)
 
@@ -822,6 +953,10 @@ def quantize_and_upload(
 
         load_config = SmoothQuantConfig(base_config, step="prepare_for_loading")
         quantized_model.config.quantization_config = TorchAoConfig(load_config)
+
+        # Clean up after quantization
+        cleanup_gpu_memory()
+        log_gpu_memory("After SmoothQuant Quantization")
     else:
         # other quantization are integrated with `from_pretrained` in huggingface transformers
         assert quant in quant_to_config, f"Unsupported quant option: {quant}"
@@ -835,6 +970,11 @@ def quantize_and_upload(
         quantization_config = TorchAoConfig(
             quant_type=quant_config, **torchao_config_kwargs
         )
+
+        # Clean up memory before loading and quantizing model
+        cleanup_gpu_memory()
+        log_gpu_memory(f"Before {quant} Model Loading & Quantization")
+
         quantized_model = AutoModelForCausalLM.from_pretrained(
             model_to_quantize,
             device_map="auto",
@@ -843,6 +983,10 @@ def quantize_and_upload(
             max_memory={i: "20GiB" for i in range(8)},
         )
         tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+        # Clean up after quantization
+        cleanup_gpu_memory()
+        log_gpu_memory(f"After {quant} Quantization")
 
     username = _get_username()
 
@@ -891,16 +1035,25 @@ def quantize_and_upload(
     card = ModelCard(content)
 
     # Push to hub
+    cleanup_gpu_memory()
+    log_gpu_memory("Before Model Upload/Save")
+
     if push_to_hub:
-        quantized_model.push_to_hub(quantized_model_id, safe_serialization=False)
+        quantized_model.push_to_hub(quantized_model_id, safe_serialization=True)
         tokenizer.push_to_hub(quantized_model_id)
         if populate_model_card_template:
             card.push_to_hub(quantized_model_id)
     else:
-        quantized_model.save_pretrained(quantized_model_id, safe_serialization=False)
+        quantized_model.save_pretrained(quantized_model_id, safe_serialization=True)
         tokenizer.save_pretrained(quantized_model_id)
 
+    cleanup_gpu_memory()
+    log_gpu_memory("After Model Upload/Save")
+
     # Manual Testing
+    cleanup_gpu_memory()
+    log_gpu_memory("Before Manual Testing")
+
     prompt = "Hey, are you conscious? Can you talk to me?"
     messages = [
         {
@@ -925,6 +1078,9 @@ def quantize_and_upload(
         generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )
     print("Response:", output_text[0][len(prompt) :])
+
+    cleanup_gpu_memory()
+    log_gpu_memory("After Manual Testing - Final")
 
 
 if __name__ == "__main__":
