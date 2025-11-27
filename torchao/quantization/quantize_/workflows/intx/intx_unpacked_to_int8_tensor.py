@@ -15,6 +15,7 @@ from torchao.quantization.quant_primitives import (
     _DTYPE_TO_QVALUE_BOUNDS,
     MappingType,
     _choose_qparams_and_quantize_scale_only_hqq,
+    _choose_qparams_and_quantize_scale_only_sinq,
     choose_qparams_affine,
     dequantize_affine,
     quantize_affine,
@@ -63,6 +64,9 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
         zero_point: block zero points for quantization
                dtype is the same as the original Tensor dtype or int8
                Shape is (n // block_size[0], k // block_size[1]) for 2D tensor
+        second_scale: Optional column scale for separable quantization (e.g., SINQ)
+               dtype is the same as the original Tensor dtype.
+               Shape is (group_size,) for separable quantization, None otherwise
 
     Non-Tensor Attributes:
         target_dtype: this determines the quant_min/quant_max of the qdata (can be torch.int1, ..., torch.int8)
@@ -72,6 +76,7 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
     """
 
     tensor_data_names = ["qdata", "scale", "zero_point"]
+    optional_tensor_data_names = ["second_scale"]
     tensor_attribute_names = [
         "target_dtype",
         "block_size",
@@ -88,6 +93,7 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
         block_size,
         dtype,
         activation_quantization,
+        second_scale=None,
     ):
         kwargs = {}
         kwargs["device"] = qdata.device
@@ -105,6 +111,7 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
         block_size,
         dtype,
         activation_quantization,
+        second_scale=None,
     ):
         super().__init__()
         assert qdata.dtype == torch.int8, (
@@ -116,6 +123,10 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
         assert zero_point.dtype in _FLOAT_TYPES or zero_point.dtype == torch.int8, (
             f"zero_point dtype must be {torch.int8} or one of {_FLOAT_TYPES}, but got {zero_point.dtype}"
         )
+        if second_scale is not None:
+            assert second_scale.ndim == 1, (
+                f"second_scale must be 1D, but got {second_scale.ndim}D"
+            )
 
         assert target_dtype in [
             getattr(torch, f"int{bit_width}") for bit_width in range(1, 9)
@@ -142,6 +153,7 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
         self.qdata = qdata
         self.scale = scale
         self.zero_point = zero_point
+        self.second_scale = second_scale
 
         self.target_dtype = target_dtype
         self.block_size = block_size
@@ -168,6 +180,7 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
             self.block_size,
             dtype,
             self.activation_quantization,
+            second_scale=self.second_scale if self.second_scale is not None else None,
         )
 
     @classmethod
@@ -200,6 +213,9 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
                 "custom_zero_point is not supported with intx_choose_qparams_algorithm"
             )
 
+        # 2-axis Scale (e.g., SINQ)
+        second_scale = None
+
         if intx_choose_qparams_algorithm is None:
             assert custom_scale is not None, "custom_scale must be given"
             assert custom_zero_point is not None, "custom_zero_point must be given"
@@ -220,6 +236,25 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
             )
             qdata = qdata.to(torch.int8)
             zero_point = torch.zeros_like(scale, dtype=torch.int8)
+        elif (
+            intx_choose_qparams_algorithm == IntxChooseQParamsAlgorithm.SINQ_SCALE_ONLY
+        ):
+            # SINQ returns (qdata, scale_row, scale_col)
+            # scale_row: [num_rows, num_groups], scale_col: [group_size]
+            # Store them separately to save memory (31x reduction!)
+            group_size = block_size[1]
+            qdata, scale_row, scale_col = _choose_qparams_and_quantize_scale_only_sinq(
+                hp_tensor, qmin, qmax, group_size
+            )
+            # qdata is already int8
+
+            # Store scale_row and scale_col separately
+            scale = scale_row  # [num_rows, num_groups]
+            second_scale = scale_col  # [group_size]
+
+            # SINQ is symmetric (scale-only), so zero_point is zeros
+            zero_point = torch.zeros_like(scale, dtype=torch.int8)
+            # block_size remains [1, group_size]
         elif intx_choose_qparams_algorithm == IntxChooseQParamsAlgorithm.AFFINE:
             scale, zero_point = choose_qparams_affine(
                 hp_tensor,
@@ -261,15 +296,34 @@ class IntxUnpackedToInt8Tensor(TorchAOBaseTensor):
             block_size=block_size,
             dtype=hp_tensor.dtype,
             activation_quantization=activation_quantization,
+            second_scale=second_scale,
         )
 
     def dequantize(self):
         qmin, qmax = _DTYPE_TO_QVALUE_BOUNDS[self.target_dtype]
+
+        # If we have separable scales, expand them to 2-axis scale like SINQ
+        if self.second_scale is not None:
+            # Expand scale_col from [group_size] to [in_features]
+            num_groups = self.scale.shape[1]
+            scale_col_expanded = self.scale_col.repeat(num_groups)
+
+            # Expand scale_row from [num_rows, num_groups] to [num_rows, in_features]
+            scale_row_expanded = self.scale.repeat_interleave(self.block_size[1], dim=1)
+
+            # Combined scale for dequantization
+            combined_scale = scale_row_expanded * scale_col_expanded
+
+            # Also expand zero_point to match
+            combined_zero_point = self.zero_point.repeat_interleave(
+                self.block_size[1], dim=1
+            )
+
         return dequantize_affine(
             self.qdata,
-            self.block_size,
-            self.scale,
-            self.zero_point,
+            self.block_size if self.scale is None else (1, 1),
+            self.scale if self.scale is not None else combined_scale,
+            self.zero_point if self.zero_point is not None else combined_zero_point,
             torch.int8,
             qmin,
             qmax,
@@ -436,6 +490,7 @@ def _(func, types, args, kwargs):
         new_block_size,
         self.dtype,
         self.activation_quantization,
+        second_scale=self.second_scale,
     )
     return return_and_correct_aliasing(func, args, kwargs, new)
 

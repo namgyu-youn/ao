@@ -21,3 +21,8 @@ class IntxChooseQParamsAlgorithm(str, Enum):
     Uses `torchao.quantization.quant_primitives._choose_qparams_and_quantize_scale_only_hqq`
     """
     HQQ_SCALE_ONLY = "hqq_scale_only"
+
+    """
+    Uses `torchao.quantization.quant_primitives._choose_qparams_and_quantize_scale_only_sinq`
+    """
+    SINQ_SCALE_ONLY = "sinq_scale_only"
