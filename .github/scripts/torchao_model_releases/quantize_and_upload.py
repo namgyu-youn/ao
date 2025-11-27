@@ -227,7 +227,7 @@ model_to_quantize = "{untied_model}"
 USER_ID = "YOUR_USER_ID"
 MODEL_NAME = model_id.split("/")[-1]
 save_to = f"{{USER_ID}}/{{MODEL_NAME}}-{quant}"
-quantized_model.push_to_hub(save_to, safe_serialization=True)
+quantized_model.push_to_hub(save_to, safe_serialization=False)
 tokenizer.push_to_hub(save_to)
 
 # Manual Testing
@@ -1039,12 +1039,12 @@ def quantize_and_upload(
     log_gpu_memory("Before Model Upload/Save")
 
     if push_to_hub:
-        quantized_model.push_to_hub(quantized_model_id, safe_serialization=True)
+        quantized_model.push_to_hub(quantized_model_id, safe_serialization=False)
         tokenizer.push_to_hub(quantized_model_id)
         if populate_model_card_template:
             card.push_to_hub(quantized_model_id)
     else:
-        quantized_model.save_pretrained(quantized_model_id, safe_serialization=True)
+        quantized_model.save_pretrained(quantized_model_id, safe_serialization=False)
         tokenizer.save_pretrained(quantized_model_id)
 
     cleanup_gpu_memory()
