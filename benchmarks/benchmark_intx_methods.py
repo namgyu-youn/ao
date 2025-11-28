@@ -90,7 +90,7 @@ def benchmark_method(
 
     # Load and quantize
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, device_map=device, torch_dtype=torch.bfloat16
+        model_id, device_map="auto", torch_dtype=torch.bfloat16
     )
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
@@ -163,9 +163,10 @@ def main():
     print(f"Benchmarking {args.model_id} on {args.methods}")
 
     # Baseline
+
     print("\nMeasuring baseline...")
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_id, device_map=args.device, torch_dtype=torch.bfloat16
+        args.model_id, device_map="auto", torch_dtype=torch.bfloat16
     )
     baseline = get_model_size_in_bytes(model)
     print(f"Baseline: {baseline / 1e9:.3f} GB")
