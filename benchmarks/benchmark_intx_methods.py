@@ -3,8 +3,6 @@
 #
 # This source code is licensed under the BSD 3-Clause license found in the
 # LICENSE file in the root directory of this source tree.
-
-#!/usr/bin/env python3
 """Benchmark calibration-free quantization methods: INT8-INT4, INT8-INT4-HQQ, and INT8-INT4-SINQ
 
 3-way doesn't require calibration flow and can be applied directly without element-wise operations.
@@ -142,11 +140,6 @@ def benchmark_method(
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
 
-    # Force garbage collection
-    import gc
-
-    gc.collect()
-
     print(
         f"Size: {size_gb:.3f} GB ({comp_ratio:.2f}x) | Quant: {quant_time:.1f}s | "
         f"Fwd: {fwd_ms:.2f}ms | Throughput: {tok_per_s:.1f} tok/s | Mem: {peak_mem:.2f} GB"
@@ -161,8 +154,8 @@ def main():
     parser.add_argument(
         "--methods", nargs="+", default=["INT8-INT4", "INT8-INT4-HQQ", "INT8-INT4-SINQ"]
     )
-    parser.add_argument("--tasks", nargs="+", default="gsm8k", help="lm_eval tasks")
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--tasks", nargs="+", default=["gsm8k"], help="lm_eval tasks")
+    parser.add_argument("--limit", type=int, default=50, help="lm_eval limit per task")
     parser.add_argument("--output", default="results.csv")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -186,6 +179,7 @@ def main():
                 args.model_id, method, baseline, args.tasks, args.limit, args.device
             )
         )
+        torch.cuda.empty_cache()
 
     # Summary
     print(f"\n{'=' * 80}\nSUMMARY\n{'=' * 80}")
