@@ -13,7 +13,7 @@ Usage:
 
 import argparse
 import csv
-import json
+import gc
 import time
 from dataclasses import dataclass
 
@@ -89,6 +89,7 @@ def benchmark_method(
 
     # Ensure clean CUDA state before loading
     torch.cuda.synchronize()
+    gc.collect()
     torch.cuda.empty_cache()
 
     # Load and quantize
@@ -129,7 +130,9 @@ def benchmark_method(
     eval_results = TransformerEvalWrapper(
         model, tokenizer, 2048, device=device
     ).run_eval(tasks, limit)
-    accuracy = eval_results.get("results", {})
+    results_dict = eval_results.get("results", {})
+    first_task = list(results_dict.keys())[0]
+    accuracy = results_dict[first_task].get("exact_match,flexible-extract", None)
 
     result = Result(
         method, size_gb, comp_ratio, quant_time, fwd_ms, tok_per_s, peak_mem, accuracy
@@ -219,7 +222,7 @@ def main():
                     f"{r.fwd_ms:.2f}",
                     f"{r.tok_per_s:.1f}",
                     f"{r.peak_mem_gb:.2f}",
-                    json.dumps(r.accuracy) if r.accuracy else "",
+                    f"{r.accuracy:.4f}",
                 ]
             )
     print(f"\nSaved to {args.output}")
