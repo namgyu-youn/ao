@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 #!/usr/bin/env python3
-"""Benchmark INT8-INT4, INT8-INT4-HQQ, and INT8-INT4-SINQ quantization methods.
+"""Benchmark calibration-free quantization methods: INT8-INT4, INT8-INT4-HQQ, and INT8-INT4-SINQ
 
 3-way doesn't require calibration flow and can be applied directly without element-wise operations.
 
@@ -100,7 +100,7 @@ def benchmark_method(
 
     torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
-    quantize_(model, get_config(method))
+    quantize_(model, get_config(method), filter_fn=None)
     quant_time = time.time() - t0
 
     # Metrics
@@ -127,14 +127,10 @@ def benchmark_method(
 
     # Eval
     accuracy = None
-    if tasks:
-        try:
-            eval_results = TransformerEvalWrapper(
-                model, tokenizer, 2048, device=device
-            ).run_eval(tasks, limit)
-            accuracy = eval_results.get("results", {})
-        except Exception as e:
-            print(f"Eval failed: {e}")
+    eval_results = TransformerEvalWrapper(
+        model, tokenizer, 2048, device=device
+    ).run_eval(tasks, limit)
+    accuracy = eval_results.get("results", {})
 
     result = Result(
         method, size_gb, comp_ratio, quant_time, fwd_ms, tok_per_s, peak_mem, accuracy
@@ -165,16 +161,14 @@ def main():
     parser.add_argument(
         "--methods", nargs="+", default=["INT8-INT4", "INT8-INT4-HQQ", "INT8-INT4-SINQ"]
     )
-    parser.add_argument("--tasks", nargs="+", default=None, help="lm_eval tasks")
+    parser.add_argument("--tasks", nargs="+", default="gsm8k", help="lm_eval tasks")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--output", default="results.csv")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
-
     print(f"Benchmarking {args.model_id} on {args.methods}")
 
     # Baseline
-
     print("\nMeasuring baseline...")
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id, device_map="auto", torch_dtype=torch.bfloat16
