@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import time
 from dataclasses import dataclass
 
@@ -190,7 +191,7 @@ def main():
     for r in results:
         print(
             f"{r.method:<18} {r.size_gb:<10.3f} {r.comp_ratio:<8.2f} {r.quant_time_s:<10.1f} "
-            f"{r.fwd_ms:<10.2f} {r.tok_per_s:<10.1f} {r.peak_mem_gb:<10.2f}"
+            f"{r.fwd_ms:<10.2f} {r.tok_per_s:<10.1f} {r.peak_mem_gb:<10.2f} {r.accuracy}"
         )
 
     # Save CSV
@@ -205,18 +206,20 @@ def main():
                 "fwd_ms",
                 "tok_per_s",
                 "peak_mem_gb",
+                "accuracy",
             ]
         )
         for r in results:
             writer.writerow(
                 [
                     r.method,
-                    r.size_gb,
-                    r.comp_ratio,
-                    r.quant_time_s,
-                    r.fwd_ms,
-                    r.tok_per_s,
-                    r.peak_mem_gb,
+                    f"{r.size_gb:.2f}",
+                    f"{r.comp_ratio:.2f}",
+                    f"{r.quant_time_s:.1f}",
+                    f"{r.fwd_ms:.2f}",
+                    f"{r.tok_per_s:.1f}",
+                    f"{r.peak_mem_gb:.2f}",
+                    json.dumps(r.accuracy) if r.accuracy else "",
                 ]
             )
     print(f"\nSaved to {args.output}")
