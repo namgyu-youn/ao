@@ -140,10 +140,10 @@ def _untie_weights_and_save_locally(model_id):
 
     from transformers.modeling_utils import find_tied_parameters
 
-    # Gemma3 호환성을 위한 안전한 config 접근
+    # Fallback for models without get_text_config method (e.g., Gemma3)
     try:
         text_config = untied_model.config.get_text_config(decoder=True)
-    except:
+    except (AttributeError, TypeError):
         text_config = untied_model.config
 
     if getattr(text_config, "tie_word_embeddings", False):
@@ -151,7 +151,7 @@ def _untie_weights_and_save_locally(model_id):
 
     untied_model._tied_weights_keys = []
 
-    # lm_head weight가 존재하는지 확인
+    # Clone lm_head weight if it exists
     if hasattr(untied_model, "lm_head") and hasattr(untied_model.lm_head, "weight"):
         untied_model.lm_head.weight = torch.nn.Parameter(
             untied_model.lm_head.weight.clone()
@@ -168,7 +168,7 @@ def _untie_weights_and_save_locally(model_id):
 
     untied_model.save_pretrained(
         save_to_local_path,
-        max_shard_size="2GB",  # 샤드 크기 제한
+        max_shard_size="2GB",  # Limit shard size
     )
     tokenizer.save_pretrained(save_to_local_path)
 
@@ -994,7 +994,7 @@ def quantize_and_upload(
 
     save_to_user_id = username if push_to_user_id is None else push_to_user_id
     save_to = f"{save_to_user_id}/{MODEL_NAME}-{quant}"
-    untied_model_path = 'f"{{MODEL_NAME}}-untied-weights"'
+    untied_model_path = f"{MODEL_NAME}-untied-weights"
     quantized_model_id = save_to
     # model card
     content = MODEL_CARD.format(
@@ -1038,17 +1038,25 @@ def quantize_and_upload(
     cleanup_gpu_memory()
     log_gpu_memory("Before Model Upload/Save")
 
-    if push_to_hub:
-        quantized_model.push_to_hub(quantized_model_id, safe_serialization=False)
-        tokenizer.push_to_hub(quantized_model_id)
-        if populate_model_card_template:
-            card.push_to_hub(quantized_model_id)
-    else:
-        quantized_model.save_pretrained(quantized_model_id, safe_serialization=False)
-        tokenizer.save_pretrained(quantized_model_id)
-
-    cleanup_gpu_memory()
-    log_gpu_memory("After Model Upload/Save")
+    try:
+        if push_to_hub:
+            quantized_model.push_to_hub(quantized_model_id, safe_serialization=False)
+            tokenizer.push_to_hub(quantized_model_id)
+            if populate_model_card_template:
+                card.push_to_hub(quantized_model_id)
+            print(f"Successfully pushed to {quantized_model_id}")
+        else:
+            quantized_model.save_pretrained(
+                quantized_model_id, safe_serialization=False
+            )
+            tokenizer.save_pretrained(quantized_model_id)
+            print(f"Successfully saved to {quantized_model_id}")
+    except Exception as e:
+        print(f"Failed to {'push' if push_to_hub else 'save'} model: {e}")
+        raise
+    finally:
+        cleanup_gpu_memory()
+        log_gpu_memory("After Model Upload/Save")
 
     # Manual Testing
     cleanup_gpu_memory()
