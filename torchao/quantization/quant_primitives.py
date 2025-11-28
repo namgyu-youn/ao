@@ -2223,6 +2223,7 @@ def _choose_qparams_and_quantize_scale_only_hqq(
     return qdata, scale
 
 
+@torch.no_grad()
 def _choose_qparams_and_quantize_scale_only_sinq(
     tensor: torch.Tensor,
     qmin: int = -(2 ** (4 - 1)),
@@ -2251,33 +2252,30 @@ def _choose_qparams_and_quantize_scale_only_sinq(
             f"group_size must divide tensor elements. shape: {tensor.shape}, group_size: {group_size}"
         )
 
-    W = tensor.to(dtype=compute_dtype)
-    shape = W.shape
-
     # Reshape for 1D tiling
-    W = W.reshape(-1, group_size)  # [N*num_groups, group_size]
+    shape = tensor.shape
+    W = tensor.to(dtype=compute_dtype).reshape(-1, group_size)
 
     # Algorithm 1: Sinkhorn Normalization
     sigma_min = min(W.std(dim=0).min().item(), W.std(dim=1).min().item())
     sigma_min = max(sigma_min, 1e-8)
 
     # Scale factor is iteratively accumulated
-    W_hat = W.clone()
     log_scale_col = torch.zeros(W.shape[1], device=W.device, dtype=compute_dtype)
     log_scale_row = torch.zeros(W.shape[0], device=W.device, dtype=compute_dtype)
 
     for _ in range(niter):
-        sigma_0 = W_hat.std(dim=0) / sigma_min
-        sigma_1 = W_hat.std(dim=1) / sigma_min
+        sigma_0 = W.std(dim=0) / sigma_min
+        sigma_1 = W.std(dim=1) / sigma_min
 
-        sigma_0 = torch.clamp(sigma_0, min=1e-8)
-        sigma_1 = torch.clamp(sigma_1, min=1e-8)
+        sigma_0.clamp_(min=1e-8)
+        sigma_1.clamp_(min=1e-8)
 
-        W_hat = W_hat / sigma_0.unsqueeze(0)
-        log_scale_col = log_scale_col + torch.log(sigma_0)
+        W.div_(sigma_0.unsqueeze(0))
+        log_scale_col.add_(torch.log(sigma_0))
 
-        W_hat = W_hat / sigma_1.unsqueeze(1)
-        log_scale_row = log_scale_row + torch.log(sigma_1)
+        W.div_(sigma_1.unsqueeze(1))
+        log_scale_row.add_(torch.log(sigma_1))
 
     # Convert back from log domain
     scale_col_sinkhorn = torch.exp(log_scale_col)
@@ -2285,9 +2283,9 @@ def _choose_qparams_and_quantize_scale_only_sinq(
 
     # INT8 symmetric quantization
     # TODO: Consider custom bitwidth for SIMD acceleration like vadd4
-    scale_s = (W_hat.abs().amax(dim=1, keepdim=True) / float(qmax)).clamp_min(1e-8)
+    scale_s = (W.abs().amax(dim=1, keepdim=True) / float(qmax)).clamp_min(1e-8)
     # TODO: Find better rounding strategy like stochastic rounding
-    Q = _Round.apply(W_hat / scale_s).clamp(qmin, qmax)
+    Q = _Round.apply(W / scale_s).clamp(qmin, qmax)
     # TODO: PERF test for scale factor dtype (FP16 vs. INT8)
     # Although FP16 has high accuracy, FP16×INT8 can't be computed
     # in Tensor Core directly, requiring INT8 to FP16 ops.
