@@ -88,6 +88,10 @@ def benchmark_method(
     """Benchmark a single method."""
     print(f"\n{'=' * 60}\n{method}\n{'=' * 60}")
 
+    # Ensure clean CUDA state before loading
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+
     # Load and quantize
     model = AutoModelForCausalLM.from_pretrained(
         model_id, device_map="auto", torch_dtype=torch.bfloat16
@@ -136,9 +140,16 @@ def benchmark_method(
         method, size_gb, comp_ratio, quant_time, fwd_ms, tok_per_s, peak_mem, accuracy
     )
 
-    # Cleanup
+    # Cleanup with proper synchronization
     del model
+    del tokenizer
+    torch.cuda.synchronize()
     torch.cuda.empty_cache()
+
+    # Force garbage collection
+    import gc
+
+    gc.collect()
 
     print(
         f"Size: {size_gb:.3f} GB ({comp_ratio:.2f}x) | Quant: {quant_time:.1f}s | "
