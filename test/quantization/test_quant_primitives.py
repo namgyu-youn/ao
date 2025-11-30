@@ -849,15 +849,19 @@ class TestQuantPrimitives(unittest.TestCase):
         # Check scale factors are producible
         num_groups = input.shape[1] // group_size
         self.assertEqual(scale_row.shape, (input.shape[0], num_groups))
-        self.assertEqual(scale_col.shape, (input.shape[1],))
+        self.assertEqual(scale_col.shape, (group_size,))
         self.assertTrue((scale_row > 0).all() and (scale_col > 0).all())
 
         # Check weight transform with 2-scale factor is applicable
         qdata_fp32 = qdata.to(torch.float32)
         qdata_reshaped = qdata_fp32.reshape(-1, group_size)
         scale_row_expanded = scale_row.reshape(-1, 1)
-        scale_col_reshaped = scale_col.reshape(num_groups, group_size)
-        scale_col_expanded = scale_col_reshaped.repeat(input.shape[0], 1)
+        scale_col_expanded = (
+            scale_col.repeat(num_groups)
+            .unsqueeze(0)
+            .repeat(input.shape[0], 1)
+            .reshape(-1, group_size)
+        )
         reconstructed = (
             qdata_reshaped * scale_row_expanded * scale_col_expanded
         ).reshape(input.shape)
