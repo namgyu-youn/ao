@@ -349,11 +349,15 @@ def main(
             Int8DynamicActivationInt4WeightConfig,
             Int8DynamicActivationInt8WeightConfig,
             Int8WeightOnlyConfig,
+            IntxWeightOnlyConfig,
             UIntXWeightOnlyConfig,
             autoquant,
             quantize_,
         )
         from torchao.quantization.granularity import PerRow, PerTensor
+        from torchao.quantization.quantize_.workflows import (
+            IntxChooseQParamsAlgorithm,
+        )
 
         if "spinquant" in quantization:
             from torchao.prototype.spinquant import apply_spinquant
@@ -434,6 +438,35 @@ def main(
                 model,
                 Int4WeightOnlyConfig(group_size=group_size, use_hqq=use_hqq, version=1),
             )
+        elif "intxwo" in quantization:
+            use_hqq = False
+            if "hqq" in quantization:
+                use_hqq = True
+            group_size = int(quantization.split("-")[1])
+            assert group_size in [
+                32,
+                64,
+                128,
+                256,
+            ], (
+                f"intxwo group_size needs to be one of [32,64,128,256] but got {group_size}"
+            )
+            from torchao.quantization.granularity import PerGroup
+
+            if use_hqq:
+                quantize_(
+                    model,
+                    IntxWeightOnlyConfig(
+                        granularity=PerGroup(group_size),
+                        intx_choose_qparams_algorithm=IntxChooseQParamsAlgorithm.HQQ_SCALE_ONLY,
+                        version=2,
+                    ),
+                )
+            else:
+                quantize_(
+                    model,
+                    IntxWeightOnlyConfig(granularity=PerGroup(group_size), version=2),
+                )
         elif "int4dq-" in quantization:
             from torchao.dtypes import CutlassInt4PackedLayout
 
@@ -1142,7 +1175,7 @@ if __name__ == "__main__":
         "--quantization",
         type=str,
         help=(
-            "Which quantization techniques to apply: int8dq, int8wo, fp6, int4wo-<groupsize>, int4wo-<groupsize>-hqq, autoquant, "
+            "Which quantization techniques to apply: int8dq, int8wo, fp6, int4wo-<groupsize>, int4wo-<groupsize>-hqq, intxwo-<groupsize>, intxwo-<groupsize>-hqq, autoquant, "
             + "autoquant-int4, autoquant-gemlite-int4, autoquant-float8, autoquant-sparse, autoquant-all, uintx-<nbits>-<groupsize>, uintx-<nbits>-<groupsize>-hqq, sparse-marlin, spinquant, "
             + "embed-int8wo, marlin_qqq, gemlite-<pack_bitwidth>-<nbits>-<groupsize>, float8dq, int4dq-<nbits>, fbgemm-int4-<group_size>"
         ),
