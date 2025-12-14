@@ -21,7 +21,6 @@ from torchao.quantization.quant_primitives import (
 )
 from torchao.quantization.quantize_.common import (
     QuantizeTensorKwargs,
-    _choose_quant_func_and_quantize_tensor,
 )
 from torchao.quantization.utils import get_block_size
 from torchao.utils import TorchAOBaseTensor, fill_defaults
@@ -199,10 +198,10 @@ def _(func, types, args, kwargs):
     output_dtype = activation_tensor.dtype
 
     if weight_tensor.act_quant_kwargs is not None:
-        activation_tensor = _choose_quant_func_and_quantize_tensor(
+        activation_tensor = Int8Tensor.from_hp(
             activation_tensor,
-            weight_tensor.act_quant_kwargs,
-            scale=weight_tensor.act_scale,
+            weight_tensor.act_quant_kwargs.granularity,
+            mapping_type=weight_tensor.act_quant_kwargs.mapping_type,
         )
         # Dynamic activation quantization path
 

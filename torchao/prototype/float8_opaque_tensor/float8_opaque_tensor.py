@@ -18,10 +18,8 @@ from torchao.quantization.quant_primitives import (
     _choose_scale_float8,
     _quantize_affine_float8,
 )
-from torchao.quantization.quantize_.common import (
-    _choose_quant_func_and_quantize_tensor,
-)
 from torchao.quantization.quantize_.workflows.float8.float8_tensor import (
+    Float8Tensor,
     QuantizeTensorToFloat8Kwargs,
 )
 from torchao.utils import (
@@ -240,8 +238,14 @@ def _(func, types, args, kwargs):
                     "input and weight should have the same group size but got"
                     f" {weight_tensor.block_size[1]} and {group_size}"
                 )
-        input_tensor = _choose_quant_func_and_quantize_tensor(
-            act_mat, weight_tensor.act_quant_kwargs
+        input_tensor = Float8Tensor.from_hp(
+            act_mat,
+            weight_tensor.act_quant_kwargs.float8_dtype,
+            weight_tensor.act_quant_kwargs.granularity,
+            weight_tensor.act_quant_kwargs.mm_config,
+            weight_tensor.act_quant_kwargs.hp_value_lb,
+            weight_tensor.act_quant_kwargs.hp_value_ub,
+            weight_tensor.act_quant_kwargs.kernel_preference,
         )
         act_mat = input_tensor.qdata
         act_scale = input_tensor.scale

@@ -35,7 +35,6 @@ from torchao.quantization.quant_primitives import (
 from torchao.quantization.quantize_.common import (
     KernelPreference,
     QuantizeTensorKwargs,
-    _choose_quant_func_and_quantize_tensor,
 )
 from torchao.quantization.utils import get_block_size
 from torchao.utils import (
@@ -308,8 +307,14 @@ def _float8_addmm_impl(
         assert not isinstance(input_tensor, TorchAOBaseTensor), (
             "input tensor was already quantized"
         )
-        input_tensor = _choose_quant_func_and_quantize_tensor(
-            input_tensor, act_quant_kwargs
+        input_tensor = Float8Tensor.from_hp(
+            input_tensor,
+            act_quant_kwargs.float8_dtype,
+            act_quant_kwargs.granularity,
+            act_quant_kwargs.mm_config,
+            act_quant_kwargs.hp_value_lb,
+            act_quant_kwargs.hp_value_ub,
+            act_quant_kwargs.kernel_preference,
         )
 
     # TODO: technically addmm and mm don't support broadcasting,
@@ -452,8 +457,14 @@ def _(func, types, args, kwargs):
     orig_act_size = input_tensor.size()
     act_quant_kwargs = weight_tensor.act_quant_kwargs
     if act_quant_kwargs is not None:
-        input_tensor = _choose_quant_func_and_quantize_tensor(
-            input_tensor, act_quant_kwargs
+        input_tensor = Float8Tensor.from_hp(
+            input_tensor,
+            act_quant_kwargs.float8_dtype,
+            act_quant_kwargs.granularity,
+            act_quant_kwargs.mm_config,
+            act_quant_kwargs.hp_value_lb,
+            act_quant_kwargs.hp_value_ub,
+            act_quant_kwargs.kernel_preference,
         )
 
     if isinstance(input_tensor, Float8Tensor):
@@ -512,8 +523,14 @@ def _quantize_and_scaled_conv3d(
     act_quant_kwargs = weight_tensor.act_quant_kwargs
     # quantize activation, if `act_quant_kwargs` is specified
     if act_quant_kwargs is not None:
-        input_tensor = _choose_quant_func_and_quantize_tensor(
-            input_tensor, act_quant_kwargs
+        input_tensor = Float8Tensor.from_hp(
+            input_tensor,
+            act_quant_kwargs.float8_dtype,
+            act_quant_kwargs.granularity,
+            act_quant_kwargs.mm_config,
+            act_quant_kwargs.hp_value_lb,
+            act_quant_kwargs.hp_value_ub,
+            act_quant_kwargs.kernel_preference,
         )
 
     if isinstance(input_tensor, Float8Tensor):
