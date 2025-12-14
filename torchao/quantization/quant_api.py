@@ -83,6 +83,7 @@ from torchao.quantization.quantize_.workflows import (
     Float8PackingFormat,
     Float8Tensor,
     Int4ChooseQParamsAlgorithm,
+    Int4GemliteTensor,
     Int4MarlinSparseTensor,
     Int4PackingFormat,
     Int4PlainInt32Tensor,
@@ -929,6 +930,12 @@ def _int4_weight_only_quantize_tensor(weight, config):
                 weight,
                 block_size,
                 int4_choose_qparams_algorithm=int4_choose_qparams_algorithm,
+            )
+            return new_weight
+        elif int4_packing_format == Int4PackingFormat.GEMLITE:
+            new_weight = Int4GemliteTensor.from_hp(
+                weight,
+                block_size,
             )
             return new_weight
         else:
