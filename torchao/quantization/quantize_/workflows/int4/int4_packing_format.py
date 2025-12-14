@@ -48,3 +48,10 @@ class Int4PackingFormat(str, Enum):
     for simplication of Int4TilePackedTo4dTensor API
     """
     TILE_PACKED_TO_4D = "tile_packed_to_4d"
+
+    """
+    gemlite is referring to the format used by GemLite Triton kernels for int4 quantization
+    with automatic kernel selection based on batch size. Supports group-wise quantization
+    with configurable group sizes (minimum 16, must be divisible by 32).
+    """
+    GEMLITE = "gemlite"
