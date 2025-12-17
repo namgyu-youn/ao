@@ -85,10 +85,13 @@ lm_eval --model hf --model_args pretrained={quantized_model} --tasks mmlu_pro --
 
 ```Shell
 # Baseline
-vllm bench throughput --model {base_model} --input-len 1 --output-len 512 --num-prompts 100
+vllm bench throughput --model {base_model} --input-len 256 --output-len 256 --num-prompts 100
+vllm bench latency --model {base_model} --input-len 256 --output-len 256 --batch-size 1
+
 
 # Quantized model
-vllm bench throughput --model {quantized_model} --input-len 1 --output-len 512  --num-prompts 100
+vllm bench throughput --model {quantized_model} --input-len 256 --output-len 256 --num-prompts 100
+vllm bench latency --model {base_model} --input-len 256 --output-len 256 --batch-size 1
 ```
 </details>
 
