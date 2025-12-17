@@ -84,126 +84,53 @@ language:
 
 - **Developed by:** {username}
 - **License:** apache-2.0
-- **Quantized from Model :** {base_model}
-- **Quantization Method :** {quant}
+- **Quantized from Model:** {base_model}
+- **Quantization Method:** {quant}
 
-{server_inference_recipe}
+# Model Performance
 
-{mobile_inference_recipe}
+## Perplexity (lm-eval)
 
-# Quantization Recipe
-
-Install the required packages:
-```Shell
-pip install torch
-pip install git+https://github.com/huggingface/transformers@main
-pip install --pre torchao --index-url https://download.pytorch.org/whl/nightly/cu126
-pip install accelerate
-```
-
-{untie_embedding_recipe}
-
-Use the following code to get the quantized model:
-```Py
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TorchAoConfig
-
-model_id = "{base_model}"
-model_to_quantize = "{untied_model}"
-
-{quant_code}
-
-# Push to hub
-USER_ID = "YOUR_USER_ID"
-MODEL_NAME = model_id.split("/")[-1]
-save_to = f"{{USER_ID}}/{{MODEL_NAME}}-{quant}"
-quantized_model.push_to_hub(save_to, safe_serialization={safe_serialization})
-tokenizer.push_to_hub(save_to)
-
-# Manual Testing
-prompt = "Hey, are you conscious? Can you talk to me?"
-messages = [
-    {{
-        "role": "system",
-        "content": "",
-    }},
-    {{"role": "user", "content": prompt}},
-]
-templated_prompt = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-)
-print("Prompt:", prompt)
-print("Templated prompt:", templated_prompt)
-inputs = tokenizer(
-    templated_prompt,
-    return_tensors="pt",
-).to("cuda")
-generated_ids = quantized_model.generate(**inputs, max_new_tokens=128)
-output_text = tokenizer.batch_decode(
-    generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-)
-print("Response:", output_text[0][len(prompt):])
-```
-
-Note: to `push_to_hub` you need to run
-```Shell
-pip install -U "huggingface_hub[cli]"
-huggingface-cli login
-```
-and use a token with write access, from https://huggingface.co/settings/tokens
-
-# Model Quality
-We rely on [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) to evaluate the quality of the quantized model. Here we only run on mmlu for sanity check.
-
-| Benchmark                        |                |                           |
-|----------------------------------|----------------|---------------------------|
-|                                  | {base_model}   | {quantized_model}         |
-| mmlu                             | To be filled   | To be filled                      |
-
+| Benchmark |                |                      |
+|-----------|----------------|----------------------|
+|           | {base_model}   | {quantized_model}    |
+| mmlu_pro  | To be filled   | To be filled         |
 
 <details>
-<summary> Reproduce Model Quality Results </summary>
+<summary>Reproduce Perplexity Results</summary>
 
-Need to install lm-eval from source:
-https://github.com/EleutherAI/lm-evaluation-harness#install
-
-## baseline
 ```Shell
-lm_eval --model hf --model_args pretrained={base_model} --tasks mmlu --device cuda:0 --batch_size 8
-```
+# Baseline
+lm_eval --model hf --model_args pretrained={base_model} --tasks mmlu_pro --device cuda:0 --batch_size 1 --limit 100
 
-## {quant}
-```Shell
-export MODEL={quantized_model}
-lm_eval --model hf --model_args pretrained=$MODEL --tasks mmlu --device cuda:0 --batch_size 8
+# Quantized model
+lm_eval --model hf --model_args pretrained={quantized_model} --tasks mmlu_pro --device cuda:0 --batch_size 1 --limit 100
 ```
 </details>
 
+## Throughput & Latency (vLLM)
 
+| Benchmark           |                |                      |
+|---------------------|----------------|----------------------|
+|                     | {base_model}   | {quantized_model}    |
+| Throughput (tok/s)  | To be filled   | To be filled         |
+| Latency (ms)        | To be filled   | To be filled         |
 
-{server_peak_memory_usage}
+<details>
+<summary>Reproduce Throughput & Latency Results</summary>
 
+```Shell
+# Baseline
+vllm bench throughput --model {base_model} --input-len 1 --output-len 512 --num-prompts 100
 
-{server_model_performance}
-
-{mobile_export_to_executorch}
-
-# Paper: TorchAO: PyTorch-Native Training-to-Serving Model Optimization
-The model's quantization is powered by **TorchAO**, a framework presented in the paper [TorchAO: PyTorch-Native Training-to-Serving Model Optimization](https://huggingface.co/papers/2507.16099).
-
-**Abstract:** We present TorchAO, a PyTorch-native model optimization framework leveraging quantization and sparsity to provide an end-to-end.
+# Quantized model
+vllm bench throughput --model {quantized_model} --input-len 1 --output-len 512 --num-prompts 100
+```
+</details>
 
 # Resources
-*   **Official TorchAO GitHub Repository:** [https://github.com/pytorch/ao](https://github.com/pytorch/ao)
-*   **TorchAO Documentation:** [https://docs.pytorch.org/ao/stable/index.html](https://docs.pytorch.org/ao/stable/index.html)
-
-
-# Disclaimer
-PyTorch has not performed safety evaluations or red teamed the quantized models. Performance characteristics, outputs, and behaviors may differ from the original models. Users are solely responsible for selecting appropriate use cases, evaluating and mitigating for accuracy, safety, and fairness, ensuring security, and complying with all applicable laws and regulations.
-
-Nothing contained in this Model Card should be interpreted as or deemed a restriction or modification to the licenses the models are released under, including any limitations of liability or disclaimers of warranties provided therein.
+- **TorchAO GitHub:** [https://github.com/pytorch/ao](https://github.com/pytorch/ao)
+- **TorchAO Documentation:** [https://docs.pytorch.org/ao/stable/index.html](https://docs.pytorch.org/ao/stable/index.html)
 """
 
 
@@ -240,203 +167,6 @@ tokenizer = AutoTokenizer.from_pretrained(model_id)
 """
 
 
-_server_inference_recipe = """
-# Inference with vLLM
-Install vllm nightly and torchao nightly to get some recent changes:
-```
-pip install vllm --pre --extra-index-url https://wheels.vllm.ai/nightly
-pip install torchao
-```
-
-## Serving
-Then we can serve with the following command:
-```Shell
-# Server
-export MODEL={quantized_model}
-VLLM_DISABLE_COMPILE_CACHE=1 vllm serve $MODEL --tokenizer $MODEL -O3
-```
-
-```Shell
-# Client
-curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '{{
-  "model": "{quantized_model}",
-  "messages": [
-    {{"role": "user", "content": "Give me a short introduction to large language models."}}
-  ],
-  "temperature": 0.6,
-  "top_p": 0.95,
-  "top_k": 20,
-  "max_tokens": 32768
-}}'
-```
-
-Note: please use `VLLM_DISABLE_COMPILE_CACHE=1` to disable compile cache when running this code, e.g. `VLLM_DISABLE_COMPILE_CACHE=1 python example.py`, since there are some issues with the composability of compile in vLLM and torchao,
-this is expected be resolved in pytorch 2.8.
-
-# Inference with Transformers
-
-Install the required packages:
-```Shell
-pip install git+https://github.com/huggingface/transformers@main
-pip install torchao
-pip install torch
-pip install accelerate
-```
-
-Example:
-```Py
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_name = "{quantized_model}"
-
-# load the tokenizer and the model
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype="auto",
-    device_map="cuda:0"
-)
-
-# prepare the model input
-prompt = "Give me a short introduction to large language model."
-messages = [
-    {{"role": "user", "content": prompt}}
-]
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
-)
-model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-
-# conduct text completion
-generated_ids = model.generate(
-    **model_inputs,
-    max_new_tokens=32768
-)
-output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
-
-# parsing thinking content
-try:
-    # rindex finding 151668 (</think>)
-    index = len(output_ids) - output_ids[::-1].index(151668)
-except ValueError:
-    index = 0
-
-thinking_content = tokenizer.decode(output_ids[:index], skip_special_tokens=True).strip("\n")
-content = tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
-
-print("thinking content:", thinking_content)
-print("content:", content)
-```
-"""
-
-_server_peak_memory_usage = """
-# Peak Memory Usage
-
-## Results
-
-| Benchmark        |                |                                |
-|------------------|----------------|--------------------------------|
-|                  | {base_model}   | {quantized_model}              |
-| Peak Memory (GB) | To be filled   | To be filled (?% reduction)    |
-
-
-
-<details>
-<summary> Reproduce Peak Memory Usage Results </summary>
-
-We can use the following code to get a sense of peak memory usage during inference:
-
-```Py
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TorchAoConfig
-
-# use "{base_model}" or "{quantized_model}"
-model_id = "{quantized_model}"
-quantized_model = AutoModelForCausalLM.from_pretrained(model_id, device_map="cuda:0", torch_dtype=torch.bfloat16)
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-torch.cuda.reset_peak_memory_stats()
-
-prompt = "Hey, are you conscious? Can you talk to me?"
-messages = [
-    {{
-        "role": "system",
-        "content": "",
-    }},
-    {{"role": "user", "content": prompt}},
-]
-templated_prompt = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True,
-)
-print("Prompt:", prompt)
-print("Templated prompt:", templated_prompt)
-inputs = tokenizer(
-    templated_prompt,
-    return_tensors="pt",
-).to("cuda")
-generated_ids = quantized_model.generate(**inputs, max_new_tokens=128)
-output_text = tokenizer.batch_decode(
-    generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-)
-print("Response:", output_text[0][len(prompt):])
-
-mem = torch.cuda.max_memory_reserved() / 1e9
-print(f"Peak Memory Usage: {{mem:.02f}} GB")
-```
-
-</details>
-"""
-
-_server_model_performance = """
-# Model Performance
-
-## Results (A100 machine)
-| Benchmark (Latency)              |                |                          |
-|----------------------------------|----------------|--------------------------|
-|                                  | {base_model}   | {quantized_model}        |
-| latency (batch_size=1)           | ?s             | ?s (?x speedup)          |
-| latency (batch_size=256)         | ?s             | ?s (?x speedup)          |
-
-<details>
-<summary> Reproduce Model Performance Results </summary>
-
-## Setup
-
-Get vllm source code:
-```Shell
-git clone git@github.com:vllm-project/vllm.git
-```
-
-Install vllm
-```
-VLLM_USE_PRECOMPILED=1 pip install --editable .
-```
-
-Run the benchmarks under `vllm` root folder:
-
-## benchmark_latency
-
-### baseline
-```Shell
-export MODEL={base_model}
-python benchmarks/benchmark_latency.py --input-len 256 --output-len 256 --model $MODEL --batch-size 1
-```
-
-### {quant}
-```Shell
-export MODEL={quantized_model}
-VLLM_DISABLE_COMPILE_CACHE=1 python benchmarks/benchmark_latency.py --input-len 256 --output-len 256 --model $MODEL --batch-size 1
-```
-</details>
-"""
-
-
 def quantize_and_upload(
     model_id: str,
     quant: str,
@@ -468,12 +198,7 @@ def quantize_and_upload(
     # quantization
     assert quant in quant_to_config, f"Unsupported quant option: {quant}"
     quant_config = quant_to_config[quant]
-
-    torchao_config_kwargs = {}
-
-    quantization_config = TorchAoConfig(
-        quant_type=quant_config, **torchao_config_kwargs
-    )
+    quantization_config = TorchAoConfig(quant_type=quant_config)
     quantized_model = AutoModelForCausalLM.from_pretrained(
         model_to_quantize,
         device_map="cuda:0",
