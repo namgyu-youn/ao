@@ -33,42 +33,6 @@ def _get_username():
     return username
 
 
-def _untie_weights_and_save_locally(model_id):
-    untied_model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype="auto", device_map="cuda:0"
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-    if _transformers_version >= "5":
-        from accelerate.utils.modeling import find_tied_parameters
-    else:
-        from transformers.modeling_utils import find_tied_parameters
-
-    if getattr(
-        untied_model.config.get_text_config(decoder=True), "tie_word_embeddings"
-    ):
-        setattr(
-            untied_model.config.get_text_config(decoder=True),
-            "tie_word_embeddings",
-            False,
-        )
-
-    untied_model._tied_weights_keys = []
-    untied_model.lm_head.weight = torch.nn.Parameter(
-        untied_model.lm_head.weight.clone()
-    )
-
-    print("tied weights:", find_tied_parameters(untied_model))
-
-    MODEL_NAME = model_id.split("/")[-1]
-    # save locally
-    save_to_local_path = f"{MODEL_NAME}-untied-weights"
-    untied_model.save_pretrained(save_to_local_path)
-    tokenizer.save_pretrained(save_to_local_path)
-    return save_to_local_path
-
-
 MODEL_CARD = """---
 base_model: {base_model}
 tags:
@@ -124,7 +88,7 @@ lm_eval --model hf --model_args pretrained={quantized_model} --tasks mmlu_pro --
 vllm bench throughput --model {base_model} --input-len 1 --output-len 512 --num-prompts 100
 
 # Quantized model
-vllm bench throughput --model {quantized_model} --input-len 1 --output-len 512 --num-prompts 100
+vllm bench throughput --model {quantized_model} --input-len 1 --output-len 512  --num-prompts 100
 ```
 </details>
 
@@ -170,9 +134,6 @@ tokenizer = AutoTokenizer.from_pretrained(model_id)
 def quantize_and_upload(
     model_id: str,
     quant: str,
-    push_to_hub: bool,
-    push_to_user_id: str,
-    populate_model_card_template: bool,
 ):
     quant_to_config = {
         "W8A8-FP": Float8DynamicActivationFloat8WeightConfig(granularity=PerRow()),
@@ -211,7 +172,7 @@ def quantize_and_upload(
 
     MODEL_NAME = model_id.split("/")[-1]
 
-    save_to_user_id = username if push_to_user_id is None else push_to_user_id
+    save_to_user_id = username
     save_to = f"{save_to_user_id}/{MODEL_NAME}-{quant}"
     quantized_model_id = save_to
     # model card
@@ -227,18 +188,11 @@ def quantize_and_upload(
     card = ModelCard(content)
 
     # Push to hub
-    if push_to_hub:
-        quantized_model.push_to_hub(
-            quantized_model_id, safe_serialization=safe_serialization
-        )
-        tokenizer.push_to_hub(quantized_model_id)
-        if populate_model_card_template:
-            card.push_to_hub(quantized_model_id)
-    else:
-        quantized_model.save_pretrained(
-            quantized_model_id, safe_serialization=safe_serialization
-        )
-        tokenizer.save_pretrained(quantized_model_id)
+    quantized_model.push_to_hub(
+        quantized_model_id, safe_serialization=safe_serialization
+    )
+    tokenizer.push_to_hub(quantized_model_id)
+    card.push_to_hub(quantized_model_id)
 
     # Manual Testing
     prompt = "Hey, are you conscious? Can you talk to me?"
@@ -279,24 +233,6 @@ if __name__ == "__main__":
         type=str,
         help="Quantization method",
     )
-    parser.add_argument(
-        "--push_to_hub",
-        action="store_true",
-        default=False,
-        help="Flag to indicate whether push to huggingface hub or not",
-    )
-    parser.add_argument(
-        "--push_to_user_id",
-        type=str,
-        default=None,
-        help="The user_id to use for pushing the quantized model, only used when --push_to_hub is set",
-    )
-    parser.add_argument(
-        "--populate_model_card_template",
-        action="store_true",
-        default=False,
-        help="Flag to indicate whether push model card to huggingface hub or not",
-    )
     args = parser.parse_args()
     quantize_and_upload(
         args.model_id,
@@ -304,7 +240,4 @@ if __name__ == "__main__":
         args.tasks,
         args.calibration_limit,
         args.max_seq_length,
-        args.push_to_hub,
-        args.push_to_user_id,
-        args.populate_model_card_template,
     )
