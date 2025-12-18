@@ -39,7 +39,7 @@ tags:
 - transformers
 - torchao
 - {model_type}
-license: apache-2.0
+license: MIT
 language:
 - en
 ---
@@ -52,39 +52,61 @@ language:
 - **Quantization Method:** {quant}
 
 # Model Performance
+## A. Perplexity (lm-eval)
+### Original Model
+```bash
+# Perplexity (ppl) command
+lm_eval --model hf   --model_args pretrained={base_model}   --tasks mmlu   --device cuda:0   --batch_size 8   --limit 100
+```
 
-## Perplexity (lm-eval)
+### Quantized Model
+```bash
+# Perplexity (ppl) command
+lm_eval --model hf   --model_args pretrained={quantized_model}   --tasks mmlu   --device cuda:0   --batch_size 8   --limit 100
+```
 
+### Summary
 | Benchmark |                |                      |
 |-----------|----------------|----------------------|
 |           | {base_model}   | {quantized_model}    |
-| mmlu_pro  | To be filled   | To be filled         |
+| mmlu  | -   | -         |
 
-<details>
-<summary>Reproduce Perplexity Results</summary>
 
-```Shell
-# Perplexity (ppl)
-lm_eval --model hf --model_args pretrained=<MODEL> --tasks mmlu_pro --device cuda:0 --batch_size 1 --limit 100
+## B. Throughput (vLLM)
+### Original Model
+```bash
+vllm bench throughput --model {base_model} --input-len 256 --output-len 256 --num-prompts 100
 ```
-</details>
 
-## Throughput & Latency (vLLM)
+### Quantized Model
+```bash
+vllm bench throughput --model {quantized_model} --input-len 256 --output-len 256 --num-prompts 100
+```
 
+### Summary
 | Benchmark           |                |                      |
 |---------------------|----------------|----------------------|
 |                     | {base_model}   | {quantized_model}    |
-| Throughput (tok/s)  | To be filled   | To be filled         |
-| Latency (ms)        | To be filled   | To be filled         |
+| Throughput (tok/s)  | -   | -         |
 
-<details>
-<summary>Reproduce Throughput & Latency Results</summary>
 
-```Shell
-vllm bench throughput --model <MODEL> --input-len 256 --output-len 256 --num-prompts 100
-vllm bench latency --model <MODEL> --input-len 256 --output-len 256 --batch-size 1
+## C. Latency (vLLM)
+### Original Model
+```bash
+vllm bench latency --model {base_model} --input-len 256 --output-len 256 --batch-size 1
 ```
-</details>
+
+### Quantized Model
+```bash
+vllm bench latency --model {quantized_model} --input-len 256 --output-len 256 --batch-size 1
+```
+
+### Summary
+| Benchmark           |                |                      |
+|---------------------|----------------|----------------------|
+|                     | {base_model}   | {quantized_model}    |
+| Latency (ms)        | -   | -         |
+
 
 # Resources
 - **TorchAO GitHub:** [https://github.com/pytorch/ao](https://github.com/pytorch/ao)
