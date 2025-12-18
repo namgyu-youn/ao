@@ -231,7 +231,4 @@ if __name__ == "__main__":
     quantize_and_upload(
         args.model_id,
         args.quant,
-        args.tasks,
-        args.calibration_limit,
-        args.max_seq_length,
     )
