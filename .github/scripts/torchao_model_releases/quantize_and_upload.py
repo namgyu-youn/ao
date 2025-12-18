@@ -64,11 +64,8 @@ language:
 <summary>Reproduce Perplexity Results</summary>
 
 ```Shell
-# Baseline
-lm_eval --model hf --model_args pretrained={base_model} --tasks mmlu_pro --device cuda:0 --batch_size 1 --limit 100
-
-# Quantized model
-lm_eval --model hf --model_args pretrained={quantized_model} --tasks mmlu_pro --device cuda:0 --batch_size 1 --limit 100
+# Perplexity (ppl)
+lm_eval --model hf --model_args pretrained=<MODEL> --tasks mmlu_pro --device cuda:0 --batch_size 1 --limit 100
 ```
 </details>
 
@@ -84,14 +81,8 @@ lm_eval --model hf --model_args pretrained={quantized_model} --tasks mmlu_pro --
 <summary>Reproduce Throughput & Latency Results</summary>
 
 ```Shell
-# Baseline
-vllm bench throughput --model {base_model} --input-len 256 --output-len 256 --num-prompts 100
-vllm bench latency --model {base_model} --input-len 256 --output-len 256 --batch-size 1
-
-
-# Quantized model
-vllm bench throughput --model {quantized_model} --input-len 256 --output-len 256 --num-prompts 100
-vllm bench latency --model {base_model} --input-len 256 --output-len 256 --batch-size 1
+vllm bench throughput --model <MODEL> --input-len 256 --output-len 256 --num-prompts 100
+vllm bench latency --model <MODEL> --input-len 256 --output-len 256 --batch-size 1
 ```
 </details>
 
