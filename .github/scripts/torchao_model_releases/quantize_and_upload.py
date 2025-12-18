@@ -118,7 +118,7 @@ _int4_quant_code = """
 from torchao.quantization import Int4WeightOnlyConfig
 quant_config = Int4WeightOnlyConfig(group_size=128, int4_packing_format="tile_packed_to_4d", int4_choose_qparams_algorithm="hqq")
 quantization_config = TorchAoConfig(quant_type=quant_config)
-quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", torch_dtype=torch.bfloat16, quantization_config=quantization_config)
+quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", dtype=torch.bfloat16, quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 """
 
@@ -126,7 +126,7 @@ _fp8_quant_code = """
 from torchao.quantization import Float8DynamicActivationFloat8WeightConfig, PerRow
 quant_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
 quantization_config = TorchAoConfig(quant_type=quant_config)
-quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", torch_dtype=torch.bfloat16, quantization_config=quantization_config)
+quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", dtype=torch.bfloat16, quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 """
 
@@ -134,7 +134,7 @@ _int8_quant_code = """
 from torchao.quantization import Int8WeightOnlyConfig
 quant_config = Int8WeightOnlyConfig()
 quantization_config = TorchAoConfig(quant_type=quant_config)
-quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", torch_dtype=torch.bfloat16, quantization_config=quantization_config)
+quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", dtype=torch.bfloat16, quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 """
 
@@ -142,7 +142,7 @@ _int8_int8_quant_code = """
 from torchao.quantization import Int8DynamicActivationInt8WeightConfig
 quant_config = Int8DynamicActivationInt8WeightConfig()
 quantization_config = TorchAoConfig(quant_type=quant_config)
-quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", torch_dtype=torch.bfloat16, quantization_config=quantization_config)
+quantized_model = AutoModelForCausalLM.from_pretrained(model_to_quantize, device_map="cuda:0", dtype=torch.bfloat16, quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 """
 
@@ -179,7 +179,7 @@ def quantize_and_upload(
     quantized_model = AutoModelForCausalLM.from_pretrained(
         model_to_quantize,
         device_map="cuda:0",
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         quantization_config=quantization_config,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_id)
