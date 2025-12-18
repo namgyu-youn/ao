@@ -39,7 +39,7 @@ tags:
 - transformers
 - torchao
 - {model_type}
-license: MIT
+license: mit
 language:
 - en
 ---
