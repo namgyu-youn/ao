@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
+
 #!/bin/bash
 
 # measure_accuracy_and_performance.sh - Evaluate quantization recipe accuracy
@@ -9,6 +15,7 @@
 #                  Valid tags: all, h100, b200
 #                  Valid recipes: None, float8_rowwise,
 #                                 int4_groupwise_weight_float8_rowwise_activation,
+#                                 int4_groupwise_weight_int8_activation,
 #                                 int4_groupwise_hqq_weight_only,
 #                                 int8_rowwise_weight_only, int8_rowwise
 #   MODEL_ID       (optional) HuggingFace model ID (default: meta-llama/Llama-3.1-8B)
@@ -37,6 +44,7 @@ QUANT_RECIPES_ALL=(
   "None"
   "float8_rowwise"
   "int4_groupwise_weight_float8_rowwise_activation"
+  "int4_groupwise_weight_int8_activation"
   # note: below only works on A100
   "int4_groupwise_hqq_weight_only"
   "int8_rowwise_weight_only"
@@ -60,6 +68,7 @@ QUANT_RECIPES_B200=(
 QUANT_RECIPES_H100=(
   "None"
   "float8_rowwise"
+  "int4_groupwise_weight_int8_activation"
   "int8_rowwise_weight_only"
   "int8_rowwise"
 )

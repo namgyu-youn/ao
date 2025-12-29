@@ -19,7 +19,9 @@ from torchao.quantization import (
     Float8DynamicActivationInt4WeightConfig,
     Int4WeightOnlyConfig,
     Int8DynamicActivationInt8WeightConfig,
+    Int8DynamicActivationIntxWeightConfig,
     Int8WeightOnlyConfig,
+    PerGroup,
     PerRow,
 )
 
@@ -41,6 +43,11 @@ def string_to_config(s):
         return Int8WeightOnlyConfig()
     elif s == "int8_rowwise":
         return Int8DynamicActivationInt8WeightConfig()
+    elif s == "int4_groupwise_weight_int8_activation":
+        return Int8DynamicActivationIntxWeightConfig(
+            weight_dtype=torch.int4,
+            weight_granularity=PerGroup(32),
+        )
     elif s == "mxfp8":
         return MXDynamicActivationMXWeightConfig(
             activation_dtype=torch.float8_e4m3fn,
