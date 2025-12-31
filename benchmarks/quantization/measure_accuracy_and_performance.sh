@@ -1,3 +1,9 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD 3-Clause license found in the
+# LICENSE file in the root directory of this source tree.
+
 #!/bin/bash
 
 # measure_accuracy_and_performance.sh - Evaluate quantization recipe accuracy
@@ -142,7 +148,7 @@ for quant_recipe in "${QUANT_RECIPES[@]}"; do
 
   # run eval (unless skipped via environment variable)
   if [ "${SKIP_LM_EVAL:-0}" != "1" ]; then
-    lm_eval --model hf --model_args "pretrained=$OUTPUT_DIR" --tasks "wikitext,winogrande" --device "cuda:0" --batch_size 1 --output_path "$OUTPUT_DIR/lm_eval_outputs/" 2>&1 | tee -a "$LOG_FILE"
+    lm_eval --model hf --model_args "pretrained=$OUTPUT_DIR" --tasks "winogrande" --device "cuda:0" --batch_size 4 --limit 100 --output_path "$OUTPUT_DIR/lm_eval_outputs/" 2>&1 | tee -a "$LOG_FILE"
   else
     echo "Skipping lm_eval (SKIP_LM_EVAL=1)" | tee -a "$LOG_FILE"
   fi
@@ -162,14 +168,14 @@ for quant_recipe in "${QUANT_RECIPES[@]}"; do
       echo "Skipping vllm benchmarking for $quant_recipe (known to be broken in vllm)" | tee -a "$LOG_FILE"
     else
       # prefill
-      PREFILL_ARGS="--num_prompts 32 --input_len 4096 --output_len 32 --max_model_len 4128"
+      PREFILL_ARGS="--num_prompts 8 --input_len 512 --output_len 16 --max_model_len 544"
       echo | tee -a "$LOG_FILE"
       echo "benchmarking vllm prefill performance with $PREFILL_ARGS" | tee -a "$LOG_FILE"
       echo | tee -a "$LOG_FILE"
       vllm bench throughput --model $OUTPUT_DIR --dtype bfloat16 $PREFILL_ARGS 2>&1 | tee -a "$LOG_FILE"
 
       # decode
-      DECODE_ARGS="--num_prompts 128 --input_len 32 --output_len 2048 --max_model_len 2080"
+      DECODE_ARGS="--num_prompts 32 --input_len 16 --output_len 256 --max_model_len 288"
       echo | tee -a "$LOG_FILE"
       echo "benchmarking vllm decode performance with $DECODE_ARGS"
       echo | tee -a "$LOG_FILE"

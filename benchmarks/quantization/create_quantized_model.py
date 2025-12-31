@@ -34,7 +34,7 @@ def string_to_config(s):
     elif s == "int4_groupwise_hqq_weight_only":
         return Int4WeightOnlyConfig(
             group_size=32,
-            int4_packing_format="tile_packed_to_4d",
+            int4_packing_format="preshuffled",
             int4_choose_qparams_algorithm="hqq",
         )
     elif s == "int8_rowwise_weight_only":
