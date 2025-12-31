@@ -35,7 +35,6 @@ def string_to_config(s):
         return Int4WeightOnlyConfig(
             group_size=32,
             int4_packing_format="preshuffled",
-            int4_choose_qparams_algorithm="hqq",
         )
     elif s == "int8_rowwise_weight_only":
         return Int8WeightOnlyConfig()
@@ -108,7 +107,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_id",
         type=str,
-        default="meta-llama/Llama-3.1-8B",
+        default="meta-llama/Llama-3.2-1B",
         help="The model ID to use.",
     )
     parser.add_argument(

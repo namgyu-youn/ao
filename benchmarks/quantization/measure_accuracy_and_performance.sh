@@ -86,7 +86,7 @@ VLLM_BROKEN_RECIPES=(
 TAG_OR_RECIPE="${1:-all}"
 
 # Get model_id as second positional argument (optional)
-MODEL_ID="${2:-meta-llama/Llama-3.1-8B}"
+MODEL_ID="${2:-meta-llama/Llama-3.2-1B}"
 
 # Get log file as third positional argument (optional)
 LOG_FILE="${3:-benchmarks/data/measure_accuracy_and_performance_log.txt}"
