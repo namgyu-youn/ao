@@ -145,6 +145,22 @@ class TestInt4PreshuffledTensor(TestCase):
                 "<class 'torchao.quantization.Int4PreshuffledTensor'>",
             )
 
+    @parametrize("config", [BF16_ACT_CONFIG, FP8_ACT_CONFIG])
+    def test_slice_correctness(self, config):
+        linear = torch.nn.Linear(128, 256, dtype=torch.bfloat16, device="cuda")
+        ref_linear = torch.nn.Linear(128, 128, dtype=torch.bfloat16, device="cuda")
+        ref_linear.weight.data = linear.weight.data[64:192].clone()
+        ref_linear.bias = None
+
+        quantize_(linear, config)
+        quantize_(ref_linear, config)
+
+        x = torch.randn(1, 128, dtype=torch.bfloat16, device="cuda")
+        out_sliced = torch.nn.functional.linear(x, linear.weight[64:192])
+        out_ref = ref_linear(x)
+
+        self.assertTrue(compute_error(out_ref, out_sliced) > 30)
+
 
 instantiate_parametrized_tests(TestInt4PreshuffledTensor)
 

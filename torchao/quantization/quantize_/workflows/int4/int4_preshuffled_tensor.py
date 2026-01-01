@@ -8,11 +8,13 @@
 from typing import List, Optional
 
 import torch
+from torch.utils._python_dispatch import return_and_correct_aliasing
 
 from torchao.quantization.quantize_.workflows.int4.int4_tensor import Int4Tensor
 from torchao.utils import (
     TorchAOBaseTensor,
     _is_fbgemm_gpu_genai_available,
+    fill_defaults,
 )
 
 __all__ = [
@@ -289,6 +291,40 @@ def _(func, types, args, kwargs):
 
     res = res.reshape(*orig_input_size[:-1], orig_out_features)
     return res
+
+
+@implements(aten.slice.Tensor)
+def _(func, types, args, kwargs):
+    self, dim, start, end, step = fill_defaults(args, 5, [0, None, None, 1])
+
+    assert step == 1 and self.qdata.ndim == 2 and dim == 0, (
+        f"Only step=1, 2D tensors, N-dim (dim=0) slicing supported. "
+        f"Got step={step}, ndim={self.qdata.ndim}, dim={dim}"
+    )
+
+    end = self.shape[0] if end is None else min(end, self.shape[0])
+    is_fp8 = self.group_scale.ndim == 3
+    scale_n_dim = 2 if is_fp8 else 1
+
+    return return_and_correct_aliasing(
+        func,
+        args,
+        kwargs,
+        Int4PreshuffledTensor(
+            qdata=aten.slice.Tensor(self.qdata, 0, start, end, step),
+            group_scale=aten.slice.Tensor(
+                self.group_scale, scale_n_dim, start, end, step
+            ),
+            block_size=self.block_size,
+            shape=[end - start, self.shape[1]],
+            group_zero=aten.slice.Tensor(self.group_zero, 1, start, end, step)
+            if self.group_zero is not None
+            else None,
+            row_scale=aten.slice.Tensor(self.row_scale, 0, start, end, step)
+            if self.row_scale is not None
+            else None,
+        ),
+    )
 
 
 Int4PreshuffledTensor.__module__ = "torchao.quantization"
