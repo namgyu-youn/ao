@@ -124,6 +124,7 @@ else
   fi
 fi
 
+mkdir -p "$(dirname "$LOG_FILE")"
 rm -rf $LOG_FILE
 touch $LOG_FILE
 
