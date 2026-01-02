@@ -10,10 +10,12 @@ import subprocess
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TorchAoConfig
 
+from torchao.prototype.awq.api import AWQConfig
 from torchao.prototype.mx_formats.inference_workflow import (
     MXDynamicActivationMXWeightConfig,
     NVFP4DynamicActivationNVFP4WeightConfig,
 )
+from torchao.prototype.smoothquant.api import SmoothQuantConfig
 from torchao.quantization import (
     Float8DynamicActivationFloat8WeightConfig,
     Float8DynamicActivationInt4WeightConfig,
@@ -21,6 +23,7 @@ from torchao.quantization import (
     Int8DynamicActivationInt8WeightConfig,
     Int8WeightOnlyConfig,
     PerRow,
+    quantize_,
 )
 
 
@@ -51,6 +54,16 @@ def string_to_config(s):
             use_dynamic_per_tensor_scale=True,
             use_triton_kernel=True,
         )
+    elif s == "awq_int4_weight_only":
+        base_config = Int4WeightOnlyConfig(
+            group_size=128,
+            int4_packing_format="tile_packed_to_4d",
+            int4_choose_qparams_algorithm="hqq",
+        )
+        return AWQConfig(base_config, step="prepare")
+    elif s == "smoothquant_int8":
+        base_config = Int8DynamicActivationInt8WeightConfig()
+        return SmoothQuantConfig(base_config, step="prepare", alpha=0.5)
     else:
         raise AssertionError(f"unsupported {s}")
 
@@ -58,17 +71,59 @@ def string_to_config(s):
 def quantize_model_and_save(model_id, quant_config, output_dir):
     """Quantize the model and save it to the output directory."""
     print("Quantizing model with config: ", quant_config)
-    if quant_config is None:
-        quantization_config = None
-    else:
-        quantization_config = TorchAoConfig(quant_type=quant_config)
-    quantized_model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        device_map="auto",
-        dtype=torch.bfloat16,
-        quantization_config=quantization_config,
-    )
     tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    if isinstance(quant_config, AWQConfig):
+        quantized_model = AutoModelForCausalLM.from_pretrained(
+            model_id, device_map="auto", dtype=torch.bfloat16
+        )
+        quantize_(quantized_model, quant_config)
+        quantized_model.eval()
+        with torch.no_grad():
+            for _ in range(10):
+                quantized_model(
+                    torch.randint(
+                        0,
+                        quantized_model.config.vocab_size,
+                        (1, 128),
+                        device=quantized_model.device,
+                    )
+                )
+        quantize_(quantized_model, AWQConfig(quant_config.base_config, step="convert"))
+    elif isinstance(quant_config, SmoothQuantConfig):
+        quantized_model = AutoModelForCausalLM.from_pretrained(
+            model_id, device_map="auto", dtype=torch.bfloat16
+        )
+        quantize_(quantized_model, quant_config)
+        quantized_model.eval()
+        with torch.no_grad():
+            for _ in range(10):
+                quantized_model(
+                    torch.randint(
+                        0,
+                        quantized_model.config.vocab_size,
+                        (1, 128),
+                        device=quantized_model.device,
+                    )
+                )
+        quantize_(
+            quantized_model,
+            SmoothQuantConfig(
+                quant_config.base_config, step="convert", alpha=quant_config.alpha
+            ),
+        )
+    else:
+        # Calibration-free
+        quantization_config = (
+            TorchAoConfig(quant_type=quant_config) if quant_config else None
+        )
+        quantized_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            device_map="auto",
+            dtype=torch.bfloat16,
+            quantization_config=quantization_config,
+        )
+
     quantized_model.save_pretrained(output_dir, safe_serialization=False)
     tokenizer.save_pretrained(output_dir, safe_serialization=False)
     return quantized_model, tokenizer

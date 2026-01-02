@@ -87,6 +87,8 @@ Currently, quantization string is in same format as the one being passed in llam
 - `float8dq-tensor`: FP8 dynamic quantization with tensor-wise scaling
 - `float8dq-row`: FP8 dynamic quantization with row-wise scaling
 - `gemlitewo-{bit_width}-{group_size}`: 4 or 8 bit integer quantization and utilizes the gemlite triton kernel
+- `awq_int4_weight_only`: AWQ (Activation-aware Weight Quantization) with 4-bit weights
+- `smoothquant_int8`: SmoothQuant with 8-bit dynamic activation and 8-bit weight quantization
 
 ### Model Types
 - `linear`: Simple linear layer
