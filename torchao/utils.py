@@ -500,6 +500,12 @@ def _implements_common_tensor_ops(cls):
         )
 
     def _same_metadata(self: TorchAOBaseTensor, src: TorchAOBaseTensor) -> bool:
+        # Early return if src is not a TorchAOBaseTensor or doesn't have required attributes
+        if not hasattr(src, "tensor_data_names") or not hasattr(
+            src, "tensor_attribute_names"
+        ):
+            return False
+
         _tensor_shape_match = all(
             getattr(self, t_name).shape == getattr(src, t_name).shape
             for t_name in self.tensor_data_names
@@ -541,11 +547,42 @@ def _implements_common_tensor_ops(cls):
     def _(func, types, args, kwargs):
         self = args[0]
         src = args[1]
+
+        # Case 1: Both are the same quantized tensor type with matching metadata
         if _same_metadata(self, src):
             self_tensors = self.__tensor_flatten__()[0]
             for tensor_name in self_tensors:
                 getattr(self, tensor_name).copy_(getattr(src, tensor_name))
             return
+
+        # Case 2: Copying a regular tensor into a quantized tensor
+        # This is common during checkpoint loading in frameworks like vLLM
+        if not isinstance(src, TorchAOBaseTensor):
+            # Try to quantize the source tensor using the subclass's factory
+            if hasattr(type(self), "from_hp"):
+                # Ensure src is on the correct device and dtype
+                src = src.to(device=self.device)
+                # Re-quantize using the same config as self
+                src_quantized = type(self).from_hp(
+                    src,
+                    block_size=self.block_size,
+                )
+                # Preserve optional attributes like act_pre_scale
+                if hasattr(self, "act_pre_scale") and self.act_pre_scale:
+                    if hasattr(src_quantized, "act_pre_scale"):
+                        src_quantized.act_pre_scale = self.act_pre_scale.clone()
+                # Recursively call copy_ with quantized version
+                return self.copy_(src_quantized)
+            elif hasattr(type(self), "from_tensor"):
+                # For NF4-style tensors
+                src = src.to(device=self.device)
+                src_quantized = type(self).from_tensor(
+                    src,
+                    self.block_size,
+                    getattr(self, "scaler_block_size", None),
+                )
+                return self.copy_(src_quantized)
+
         raise ValueError(
             f"Not supported args for copy_ due to metadata mismatch: {args[0], args[1]}"
         )
