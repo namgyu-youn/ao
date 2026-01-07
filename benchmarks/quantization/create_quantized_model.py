@@ -63,7 +63,7 @@ def string_to_config(s):
         )
         return AWQConfig(base_config, step="prepare")
     elif s == "smoothquant_int8":
-        base_config = Int8DynamicActivationInt8WeightConfig()
+        base_config = Int8DynamicActivationInt8WeightConfig(version=2)
         return SmoothQuantConfig(base_config, step="prepare", alpha=0.5)
     else:
         raise AssertionError(f"unsupported {s}")

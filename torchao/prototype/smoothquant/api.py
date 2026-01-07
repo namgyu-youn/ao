@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
+import torch.nn.functional as F
 
 from torchao.core.config import AOBaseConfig
 from torchao.quantization.quant_api import (
     _QUANTIZE_CONFIG_HANDLER,
     _linear_extra_repr,
 )
-from torchao.quantization.quantize_.common import SupportsActivationPreScaling
 from torchao.quantization.transform_module import (
     register_quantize_module_handler,
 )
@@ -25,6 +25,29 @@ from .core import (
     SmoothQuantObserver,
     SmoothQuantStep,
 )
+
+
+class SmoothQuantLinear(torch.nn.Linear):
+    """
+    Linear layer with SmoothQuant inverse smoothing factor.
+
+    This module stores the inverse smoothing factor as a buffer (not a tensor
+    attribute), which is more efficient and keeps the quantized weight tensor
+    simple. During forward pass, we apply the scaling to activations.
+    """
+
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
+        super().__init__(in_features, out_features, bias, device, dtype)
+        # Register as buffer so it's saved in state_dict
+        self.register_buffer("inv_smoothing_factor", None)
+
+    def forward(self, input):
+        if self.inv_smoothing_factor is not None:
+            # Apply inverse smoothing: input / smoothing_factor
+            scaled_input = input * self.inv_smoothing_factor
+            return F.linear(scaled_input, self.weight, self.bias)
+        else:
+            return F.linear(input, self.weight, self.bias)
 
 
 @dataclass
@@ -97,9 +120,9 @@ def _smooth_quant_transform(
     smoothing_factor = observed_linear.obs.calculate_qparams()
     weight = observed_linear.weight * smoothing_factor
 
-    # Create new linear layer
+    # Create new layer to store smoothing factor
     with torch.device("meta"):
-        linear = torch.nn.Linear(
+        linear = SmoothQuantLinear(
             observed_linear.in_features,
             observed_linear.out_features,
             observed_linear.bias is not None,
@@ -108,18 +131,14 @@ def _smooth_quant_transform(
         )
     linear.bias = observed_linear.bias
 
-    # Quantize weights
+    # Quantize weights (without smoothing factor embedded)
     base_config_handler = _QUANTIZE_CONFIG_HANDLER[type(base_config)]
     dummy_mod = DummyModule(weight)
     quant_mod = base_config_handler(dummy_mod, base_config)
     qw = quant_mod.weight
 
-    # Add smoothing factor
-    assert isinstance(qw, SupportsActivationPreScaling), (
-        "weight must support activation scaling through implementing "
-        "`SupportsActivationPreScaling`"
-    )
-    qw.act_pre_scale = 1.0 / smoothing_factor
+    # Store inverse smoothing factor as module
+    linear.inv_smoothing_factor = 1.0 / smoothing_factor
 
     linear.weight = torch.nn.Parameter(qw, requires_grad=False)
     linear.extra_repr = types.MethodType(_linear_extra_repr, linear)
