@@ -10,13 +10,11 @@ from typing import Optional
 import torch
 
 from torchao.core.config import AOBaseConfig
-from torchao.quantization.linear_activation_scale import (
-    to_weight_tensor_with_linear_activation_scale_metadata,
-)
 from torchao.quantization.quant_api import (
     _QUANTIZE_CONFIG_HANDLER,
     _linear_extra_repr,
 )
+from torchao.quantization.quantize_.common import SupportsActivationPreScaling
 from torchao.quantization.transform_module import (
     register_quantize_module_handler,
 )
@@ -116,10 +114,13 @@ def _smooth_quant_transform(
     quant_mod = base_config_handler(dummy_mod, base_config)
     qw = quant_mod.weight
 
-    # Add smoothing factor metadata
-    qw = to_weight_tensor_with_linear_activation_scale_metadata(
-        qw, smoothing_factor.to(qw.dtype)
+    # Add smoothing factor
+    assert isinstance(qw, SupportsActivationPreScaling), (
+        "weight must support activation scaling through implementing "
+        "`SupportsActivationPreScaling`"
     )
+    qw.act_pre_scale = 1.0 / smoothing_factor
+
     linear.weight = torch.nn.Parameter(qw, requires_grad=False)
     linear.extra_repr = types.MethodType(_linear_extra_repr, linear)
 
