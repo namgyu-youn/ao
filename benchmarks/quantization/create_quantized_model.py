@@ -10,6 +10,7 @@ import subprocess
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TorchAoConfig
 
+from torchao._models._eval import TransformerEvalWrapper
 from torchao.prototype.awq.api import AWQConfig
 from torchao.prototype.mx_formats.inference_workflow import (
     MXDynamicActivationMXWeightConfig,
@@ -68,7 +69,14 @@ def string_to_config(s):
         raise AssertionError(f"unsupported {s}")
 
 
-def quantize_model_and_save(model_id, quant_config, output_dir):
+def quantize_model_and_save(
+    model_id,
+    quant_config,
+    output_dir,
+    calibration_tasks=None,
+    calibration_limit=10,
+    max_seq_length=2048,
+):
     """Quantize the model and save it to the output directory."""
     print("Quantizing model with config: ", quant_config)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -79,16 +87,22 @@ def quantize_model_and_save(model_id, quant_config, output_dir):
         )
         quantize_(quantized_model, quant_config)
         quantized_model.eval()
-        with torch.no_grad():
-            for _ in range(10):
-                quantized_model(
-                    torch.randint(
-                        0,
-                        quantized_model.config.vocab_size,
-                        (1, 128),
-                        device=quantized_model.device,
-                    )
-                )
+
+        if calibration_tasks is None:
+            calibration_tasks = ["wikitext"]
+
+        print(
+            f"Calibrating AWQ with tasks: {calibration_tasks}, limit: {calibration_limit}"
+        )
+        TransformerEvalWrapper(
+            model=quantized_model,
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+            device=str(quantized_model.device),
+        ).run_eval(
+            tasks=calibration_tasks,
+            limit=calibration_limit,
+        )
         quantize_(quantized_model, AWQConfig(quant_config.base_config, step="convert"))
     elif isinstance(quant_config, SmoothQuantConfig):
         quantized_model = AutoModelForCausalLM.from_pretrained(
@@ -96,16 +110,22 @@ def quantize_model_and_save(model_id, quant_config, output_dir):
         )
         quantize_(quantized_model, quant_config)
         quantized_model.eval()
-        with torch.no_grad():
-            for _ in range(10):
-                quantized_model(
-                    torch.randint(
-                        0,
-                        quantized_model.config.vocab_size,
-                        (1, 128),
-                        device=quantized_model.device,
-                    )
-                )
+
+        if calibration_tasks is None:
+            calibration_tasks = ["wikitext"]
+
+        print(
+            f"Calibrating SmoothQuant with tasks: {calibration_tasks}, limit: {calibration_limit}"
+        )
+        TransformerEvalWrapper(
+            model=quantized_model,
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+            device=str(quantized_model.device),
+        ).run_eval(
+            tasks=calibration_tasks,
+            limit=calibration_limit,
+        )
         quantize_(
             quantized_model,
             SmoothQuantConfig(
@@ -143,11 +163,19 @@ def run(
     model_id: str,
     quant_recipe_name: str | None,
     model_output_dir,
+    calibration_tasks=None,
+    calibration_limit=10,
+    max_seq_length=2048,
 ):
     print(f"\nRunning {model_id=} with {quant_recipe_name=}\n")
     quant_config = string_to_config(quant_recipe_name)
     quantized_model, tokenizer = quantize_model_and_save(
-        model_id, quant_config=quant_config, output_dir=model_output_dir
+        model_id,
+        quant_config=quant_config,
+        output_dir=model_output_dir,
+        calibration_tasks=calibration_tasks,
+        calibration_limit=calibration_limit,
+        max_seq_length=max_seq_length,
     )
     print(quantized_model)
     print(f"saved {model_id=}, {quant_recipe_name=} to {model_output_dir=}")
@@ -177,6 +205,25 @@ if __name__ == "__main__":
         default="benchmarks/data/quantized_model/test",
         help="Output directory for quantized model.",
     )
+    parser.add_argument(
+        "--calibration_tasks",
+        nargs="+",
+        type=str,
+        default=["wikitext"],
+        help="Tasks to use for calibration (for AWQ/SmoothQuant).",
+    )
+    parser.add_argument(
+        "--calibration_limit",
+        type=int,
+        default=10,
+        help="Number of samples to use for calibration (for AWQ/SmoothQuant).",
+    )
+    parser.add_argument(
+        "--max_seq_length",
+        type=int,
+        default=2048,
+        help="Maximum sequence length for calibration.",
+    )
     args = parser.parse_args()
 
     # Use parsed arguments
@@ -184,4 +231,7 @@ if __name__ == "__main__":
         model_id=args.model_id,
         quant_recipe_name=args.quant_recipe_name,
         model_output_dir=args.output_dir,
+        calibration_tasks=args.calibration_tasks,
+        calibration_limit=args.calibration_limit,
+        max_seq_length=args.max_seq_length,
     )
