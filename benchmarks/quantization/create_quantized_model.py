@@ -91,9 +91,7 @@ def quantize_model_and_save(
         if calibration_tasks is None:
             calibration_tasks = ["wikitext"]
 
-        print(
-            f"Calibrating AWQ with tasks: {calibration_tasks}, limit: {calibration_limit}"
-        )
+        print(f"Calibrating AWQ with tasks: {calibration_tasks}, ")
         TransformerEvalWrapper(
             model=quantized_model,
             tokenizer=tokenizer,
@@ -115,7 +113,8 @@ def quantize_model_and_save(
             calibration_tasks = ["wikitext"]
 
         print(
-            f"Calibrating SmoothQuant with tasks: {calibration_tasks}, limit: {calibration_limit}"
+            f"Calibrating SmoothQuant with tasks: {calibration_tasks}, "
+            f"limit: {calibration_limit}"
         )
         TransformerEvalWrapper(
             model=quantized_model,
@@ -129,7 +128,9 @@ def quantize_model_and_save(
         quantize_(
             quantized_model,
             SmoothQuantConfig(
-                quant_config.base_config, step="convert", alpha=quant_config.alpha
+                quant_config.base_config,
+                step="convert",
+                alpha=quant_config.alpha,
             ),
         )
     else:
