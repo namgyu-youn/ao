@@ -16,8 +16,8 @@ __all__ = [
 aten = torch.ops.aten
 
 
-from gemlite.bitpack import pack_weights_over_cols_torch, pack_weights_over_cols_triton
-from gemlite.core import TORCH_TO_DTYPE, DType, forward_functional
+import gemlite
+from gemlite.core import forward_functional
 
 
 class Int4GemliteTensor(TorchAOBaseTensor):
@@ -35,11 +35,15 @@ class Int4GemliteTensor(TorchAOBaseTensor):
     Non-Tensor Data Attributes:
         block_size: the block size for quantization, representing the granularity (1, group_size)
         shape: the shape of the original Tensor (N, K)
-        gemlite_metadata: list containing GemLite-specific metadata for kernel dispatch
+        gemlite_kwargs: dict containing GemLite-specific metadata for kernel dispatch
+            - meta_args: complete GemLite kernel metadata list (required for forward pass)
+            - in_features: input dimension (K)
+            - out_features: output dimension (N)
+            - packing_bitwidth: bit packing width (8, 16, or 32)
     """
 
     tensor_data_names = ["qdata", "scale", "zero_point"]
-    tensor_attribute_names = ["block_size", "shape", "gemlite_metadata"]
+    tensor_attribute_names = ["block_size", "shape", "gemlite_kwargs"]
 
     def __new__(
         cls,
@@ -48,7 +52,7 @@ class Int4GemliteTensor(TorchAOBaseTensor):
         zero_point: torch.Tensor,
         block_size: list[int],
         shape: torch.Size,
-        gemlite_metadata: list[int],
+        gemlite_kwargs: dict,
     ):
         kwargs = {}
         kwargs["device"] = qdata.device
@@ -63,14 +67,14 @@ class Int4GemliteTensor(TorchAOBaseTensor):
         zero_point: torch.Tensor,
         block_size: list[int],
         shape: torch.Size,
-        gemlite_metadata: list[int],
+        gemlite_kwargs: dict,
     ):
         super().__init__()
         self.qdata = qdata
         self.scale = scale
         self.zero_point = zero_point
         self.block_size = block_size
-        self.gemlite_metadata = gemlite_metadata
+        self.gemlite_kwargs = gemlite_kwargs
 
     def _quantization_type(self):
         return f"shape={self.shape}, block_size={self.block_size}, device={self.device}, gemlite_kernel=True"
@@ -80,124 +84,85 @@ class Int4GemliteTensor(TorchAOBaseTensor):
         cls,
         w: torch.Tensor,
         block_size: list[int],
+        packing_bitwidth: int = 32,
     ):
         """
-        Create Int4GemliteTensor from high-precision weight tensor.
+        Create Int4GemliteTensor from high-precision weight tensor using GemLite helper.
 
         Args:
             w: Weight tensor of shape (N, K)
             block_size: Quantization block size, e.g. [1, 128] for groupwise with group_size=128
+            packing_bitwidth: Bit packing width (8, 16, or 32), default 32
 
         Returns:
             Int4GemliteTensor with packed weights and GemLite metadata
         """
 
-        assert len(block_size) == w.ndim, (
-            f"Expecting the length of block_size to be equal to the dimension of the weight, "
-            f"got {block_size=} and {w.ndim=}"
-        )
+        # Extract dimensions from input tensor
+        N, K = w.shape
+        group_size = block_size[1]
 
-        assert all(x == 1 for x in block_size[:-1]) and block_size[-1] != 1, (
-            "Only groupwise quantization is supported right now"
-        )
-
-        group_size = block_size[-1]
-        original_shape = w.shape
-        N, K = original_shape
-
-        # Check divisibility requirements
+        # Validate GemLite constraints
+        if group_size < 16:
+            raise ValueError(f"GemLite requires group_size >= 16, got {group_size}")
         if K % 32 != 0:
             raise ValueError(
                 f"GemLite requires in_features (K={K}) to be divisible by 32"
             )
-
         if K % group_size != 0:
             raise ValueError(
                 f"in_features (K={K}) must be divisible by group_size ({group_size})"
             )
 
-        # Minimum group size for GemLite
-        if group_size < 16:
-            raise ValueError("GemLite requires group_size >= 16")
-
-        # Quantize using symmetric quantization (similar to GemLite's approach)
-        # W_q shape: (N, K), scale shape: (N, K/group_size), zero_point shape: (N, K/group_size)
-        W_nbits = 4
-        device = w.device
-        dtype = w.dtype
-
-        # Reshape for groupwise quantization: (N, K/group_size, group_size)
+        # Reshape for groupwise: (N, K/group_size, group_size)
         w_grouped = w.reshape(N, K // group_size, group_size)
 
-        # Compute scales: max absolute value per group, shape (N, K/group_size)
+        # Compute scales: max absolute value per group
         max_val = 7.0  # For 4-bit symmetric: range is -7 to 7
         scales = w_grouped.abs().amax(dim=-1, keepdim=False) / max_val
         scales = scales.clamp(min=1e-6)
 
         # Quantize to int4 range [-7, 7], then shift to uint4 range [0, 15]
-        # Expand scales for broadcasting: (N, K/group_size, 1)
         scales_expanded = scales.unsqueeze(-1)
         w_quantized = (w_grouped / scales_expanded).clamp(-max_val, max_val).round()
 
         # Shift to unsigned range [0, 15]
         zero_point_value = 7.0
-        w_uint = (w_quantized + zero_point_value).to(torch.uint8)
+        int_data = (w_quantized + zero_point_value).to(torch.uint8).reshape(N, K)
 
-        # Flatten back to (N, K)
-        w_uint = w_uint.reshape(N, K)
+        # Compute zero points (all same value for symmetric quantization)
+        zero_point = torch.full_like(scales, zero_point_value, dtype=w.dtype)
 
-        # Pack weights using GemLite's packing utilities
-        # GemLite expects weights transposed as (K, N) for packing
-        _pack_weights = (
-            pack_weights_over_cols_triton
-            if device.type == "cuda"
-            else pack_weights_over_cols_torch
+        # Use GemLite helper to pack weights and generate metadata
+        processor = gemlite.helper.A16Wn(
+            device=w.device, packing_bitwidth=packing_bitwidth
         )
 
-        # Pack over cols (transpose, pack, transpose back)
-        W_packed, elements_per_sample = _pack_weights(
-            w_uint.view(original_shape),
-            W_nbits=W_nbits,
-            packing_bitwidth=32,  # Default packing bitwidth
-            transpose=True,  # Transpose to (K, N) internally
+        # GemLite helper handles packing and metadata generation
+        # Note: Parameters are positional: int_data, scale, zero_point, bit_width, group_size, bias
+        gemlite_linear = processor.from_weights(
+            int_data, scales, zero_point, 4, group_size, bias=None
         )
 
-        # Compute zero points (symmetric with shift)
-        zero_points = torch.full_like(scales, zero_point_value, dtype=dtype)
+        # Extract metadata and packed tensors from GemLite
+        meta_args = gemlite_linear.get_meta_args()
+        packed_weight, scale, zero_point = gemlite_linear.get_tensor_args()
 
-        # Convert to GemLite's expected format
-        # GemLite expects scale and zero_point to be transposed: (K/group_size, N)
-        scales = scales.t().contiguous().to(dtype)
-        zero_points = zero_points.t().contiguous().to(dtype)
+        # Create minimal metadata dict
+        gemlite_kwargs = {
+            "meta_args": meta_args,
+            "in_features": K,
+            "out_features": N,
+            "packing_bitwidth": packing_bitwidth,
+        }
 
-        # Create GemLite metadata
-        # Format: [scaled_activations, W_nbits, group_size, unpack_mask, elements_per_sample,
-        #          input_dtype, output_dtype, acc_dtype, meta_dtype,
-        #          channel_scale_mode, W_group_mode, data_contiguous]
-
-        gemlite_dtype = TORCH_TO_DTYPE[dtype]
-        gemlite_metadata = [
-            0,  # scaled_activations = False (weight-only quantization)
-            W_nbits,  # 4
-            group_size,
-            15,  # unpack_mask = 2^4 - 1
-            elements_per_sample,
-            gemlite_dtype.value,  # input_dtype
-            gemlite_dtype.value,  # output_dtype
-            DType.FP32.value,  # acc_dtype
-            gemlite_dtype.value,  # meta_dtype
-            0,  # channel_scale_mode
-            3,  # W_group_mode = 3 (asymmetric: (Wq - zeros) * scales)
-            1,  # data_contiguous
-        ]
-
-        return Int4GemliteTensor(
-            qdata=W_packed,
-            scale=scales,
-            zero_point=zero_points,
+        return cls(
+            qdata=packed_weight,
+            scale=scale,
+            zero_point=zero_point,
             block_size=block_size,
-            shape=original_shape,
-            gemlite_metadata=gemlite_metadata,
+            shape=w.shape,
+            gemlite_kwargs=gemlite_kwargs,
         )
 
 
@@ -232,8 +197,8 @@ def _(func, types, args, kwargs):
         weight_tensor.zero_point,
     ]
 
-    # Use stored metadata
-    meta_args = weight_tensor.gemlite_metadata
+    # Use stored metadata from dict
+    meta_args = weight_tensor.gemlite_kwargs["meta_args"]
 
     # Call GemLite's forward_functional with automatic kernel selection
     result = forward_functional(
@@ -260,7 +225,7 @@ def _(func, types, args, kwargs):
             args[0].zero_point.detach(),
             args[0].block_size,
             args[0].shape,
-            args[0].gemlite_metadata,
+            args[0].gemlite_kwargs,
         ),
     )
 
@@ -277,17 +242,24 @@ def _(func, types, args, kwargs):
             args[0].zero_point.clone(),
             args[0].block_size.copy(),
             args[0].shape,
-            args[0].gemlite_metadata.copy(),
+            args[0].gemlite_kwargs.copy(),
         ),
     )
 
 
 @implements(aten.t.default)
 def _(func, types, args, kwargs):
-    """Transpose is not supported for GemLite packed tensors."""
-    raise NotImplementedError(
-        "Transpose operation is not supported for Int4GemliteTensor. "
-        "GemLite kernels expect a specific memory layout."
+    """
+    Transpose is not applied to the packed data because GemLite kernels
+    expect weights in a specific layout. The functional linear op may
+    decompose into transpose + addmm, but we use GemLite's matmul kernel
+    which expects the weight as-is.
+    """
+    return return_and_correct_aliasing(
+        func,
+        args,
+        kwargs,
+        args[0],  # Return self without modification
     )
 
 

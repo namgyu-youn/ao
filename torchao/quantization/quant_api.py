@@ -883,7 +883,20 @@ def _int4_weight_only_quantize_tensor(weight, config):
     zero_point_domain = config.zero_point_domain
     int4_packing_format = config.int4_packing_format
 
+    # GemLite-specific validation
+    if int4_packing_format == Int4PackingFormat.GEMLITE:
+        K = weight.shape[-1]
+        if K % 32 != 0:
+            raise ValueError(
+                f"GemLite requires in_features (K={K}) to be divisible by 32"
+            )
+
     if weight.shape[-1] % group_size != 0:
+        # GemLite requires strict constraints, so raise an error instead of silently skipping
+        if int4_packing_format == Int4PackingFormat.GEMLITE:
+            raise ValueError(
+                f"GemLite requires in_features ({weight.shape[-1]}) to be divisible by group_size ({group_size})"
+            )
         logger.info(
             f"Skipping quantizing weight with int4 weight only quantization because the shape of weight {weight.shape} is not compatible with group_size {group_size}"
         )
