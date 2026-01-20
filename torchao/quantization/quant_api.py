@@ -71,7 +71,11 @@ from torchao.prototype.quantization.quant_api import (
 from torchao.quantization.linear_activation_weight_observed_tensor import (
     LinearActivationWeightObservedTensor,
 )
-from torchao.quantization.observer import AffineQuantizedObserverBase
+from torchao.quantization.observer import (
+    AffineQuantizedObserverBase,
+    ObservedLinear,
+    StaticObserver,
+)
 from torchao.quantization.quantize_.common import (
     KernelPreference,
 )
@@ -1179,10 +1183,18 @@ def _int8_dynamic_activation_int8_weight_transform(
 @dataclass
 class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
     """
-    Configuration for applying int8 static symmetric quantization to both activation and weight
+    Configuration for applying int8 static symmetric quantization to both activation and weight.
+
+    This uses an observer-based flow following the AWQ pattern:
+        - Use step="prepare" to insert observers
+        - Calibrate with representative data
+        - Use step="convert" to convert to quantized model
 
     Args:
-        act_quant_scale (torch.Tensor): The scale tensor for activation quantization.
+        act_quant_step (str): Specifies the step for the observer-based quantization process.
+            "prepare": insert observers to linear modules
+            "convert": convert the observed linear modules to linear modules with quantized weights
+        observer (StaticObserver): Type of observer to use for calibration.
         granularity (Granularity): The granularity of quantization. PerRow() and PerTensor() are supported currently
         act_mapping_type (MappingType): The mapping type for activation quantization. only SYMMETRIC is supported currently
         set_inductor_config (bool): if True, adjusts `torchinductor` settings to recommended values.
@@ -1190,6 +1202,24 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
     """
 
     act_quant_scale: Optional[torch.Tensor] = None
+
+    Example:
+        # Step 1: Prepare model by inserting observers
+        quantize_(model, Int8StaticActivationInt8WeightConfig(
+            step="prepare",
+            observer=StaticObserver.AWQ
+        ))
+
+        # Step 2: Calibrate with representative data
+        for batch in calibration_data:
+            model(batch)
+
+        # Step 3: Convert observed model to quantized model
+        quantize_(model, Int8StaticActivationInt8WeightConfig(step="convert"))
+    """
+
+    step: str
+    observer: StaticObserver = StaticObserver.MINMAX
     granularity: Granularity = PerRow()
     act_mapping_type: Optional[MappingType] = MappingType.SYMMETRIC
     set_inductor_config: bool = True
@@ -1224,49 +1254,98 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
 def _int8_static_activation_int8_weight_transform(
     module: torch.nn.Module,
     config: Int8StaticActivationInt8WeightConfig,
-    *,
-    parameter_name="weight",
 ):
+    """
+    Transform handler for Int8StaticActivationInt8WeightConfig.
+
+    Behavior depends on the step:
+    - PREPARE: Insert observer into linear module to extract "scale"
+    - CONVERT: Convert observed linear to quantized linear using observed scale
+    """
     assert config.granularity in {PerRow(), PerTensor()}, (
         "Only PerRow and PerTensor is supported currently"
     )
     assert config.act_mapping_type == MappingType.SYMMETRIC, (
         "asymmetric static quant not supported currently"
     )
-    assert hasattr(module, parameter_name), (
-        f"Expected module to have attribute `{parameter_name}` but not found"
-    )
 
-    if config.set_inductor_config:
-        torchao.quantization.utils.recommended_inductor_config_setter()
+    step = config.step
+    granularity = config.granularity
 
-    activation_granularity = config.granularity
-    weight_granularity = config.granularity
+    if step == "prepare":
+        # PREPARE step: Create observer based on observer enum and wrap linear
+        if config.observer == StaticObserver.MINMAX:
+            from torchao.quantization.observer import AffineQuantizedMinMaxObserver
 
-    quantized_tensor = Int8Tensor.from_hp(
-        getattr(module, parameter_name),
-        granularity=weight_granularity,
-        act_quant_kwargs=QuantizeTensorToInt8Kwargs(
-            granularity=activation_granularity,
-            mapping_type=config.act_mapping_type,
-        ),
-        act_quant_scale=config.act_quant_scale.detach(),
-    )
+            observer = AffineQuantizedMinMaxObserver(
+                mapping_type=config.act_mapping_type,
+                target_dtype=torch.int8,
+                granularity=granularity,
+                eps=torch.finfo(torch.float32).eps,
+                scale_dtype=torch.float32,
+                zero_point_dtype=torch.int8,
+            )
+        elif config.observer == StaticObserver.AWQ:
+            from torchao.prototype.awq.core import AWQObserver
 
-    setattr(
-        module,
-        parameter_name,
-        torch.nn.Parameter(quantized_tensor, requires_grad=False),
-    )
-    module.extra_repr = types.MethodType(
-        partial(
-            _module_extra_repr,
-            original_extra_repr=module.extra_repr,
-            parameter_name=parameter_name,
-        ),
-        module,
-    )
-    return module
+            observer = AWQObserver(
+                weight=module.weight,
+                bias=module.bias,
+                base_config=config,
+            )
+        elif config.observer == StaticObserver.SMOOTHQUANT:
+            from torchao.prototype.smoothquant.core import SmoothQuantObserver
+
+            observer = SmoothQuantObserver(
+                weight=module.weight,
+            )
+        else:
+            raise ValueError(f"Unsupported observer type: {config.observer}")
+
+        return ObservedLinear.from_float(module, observer)
+
+    elif step == "convert":
+        act_quant_scale, _ = module.act_obs.calculate_qparams()
+
+        # Ensure scale has proper dimensions for broadcasting
+        if act_quant_scale.ndim == 0:
+            # PerTensor: scale should be [1, 1]
+            act_quant_scale = act_quant_scale.view(1, 1)
+        elif act_quant_scale.ndim == 1:
+            # PerRow: scale should be [num_rows, 1]
+            act_quant_scale = act_quant_scale.unsqueeze(-1)
+
+        if config.set_inductor_config:
+            torchao.quantization.utils.recommended_inductor_config_setter()
+
+        activation_granularity = config.granularity
+        weight_granularity = config.granularity
+
+        # Create quantized weight tensor with scaled activation
+        quantized_tensor = Int8Tensor.from_hp(
+            module.weight,
+            granularity=weight_granularity,
+            act_quant_kwargs=QuantizeTensorToInt8Kwargs(
+                granularity=activation_granularity,
+                mapping_type=config.act_mapping_type,
+            ),
+            act_quant_scale=act_quant_act_quant_scale.detach(),
+        )
+
+        # Create new Linear module with quantized weight
+        linear = torch.nn.Linear(
+            module.in_features,
+            module.out_features,
+            bias=module.bias is not None,
+            device=module.weight.device,
+            dtype=module.weight.dtype,
+        )
+        linear.weight = torch.nn.Parameter(quantized_tensor, requires_grad=False)
+        linear.bias = module.bias
+        return linear
+
+    else:
+        raise ValueError(f"Unexpected step: {step}. Expected 'prepare' or 'convert'.")
 
 
 def int8_dynamic_activation_int8_semi_sparse_weight():
