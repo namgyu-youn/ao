@@ -1199,9 +1199,6 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
         act_mapping_type (MappingType): The mapping type for activation quantization. only SYMMETRIC is supported currently
         set_inductor_config (bool): if True, adjusts `torchinductor` settings to recommended values.
         version (int): the version of the config
-    """
-
-    act_quant_scale: Optional[torch.Tensor] = None
 
     Example:
         # Step 1: Prepare model by inserting observers
@@ -1222,6 +1219,7 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
     observer: StaticObserver = StaticObserver.MINMAX
     granularity: Granularity = PerRow()
     act_mapping_type: Optional[MappingType] = MappingType.SYMMETRIC
+    act_quant_scale: Optional[torch.Tensor] = None
     set_inductor_config: bool = True
     version: int = 1
 
@@ -1329,7 +1327,7 @@ def _int8_static_activation_int8_weight_transform(
                 granularity=activation_granularity,
                 mapping_type=config.act_mapping_type,
             ),
-            act_quant_scale=act_quant_act_quant_scale.detach(),
+            act_quant_scale=act_quant_scale.detach(),
         )
 
         # Create new Linear module with quantized weight
