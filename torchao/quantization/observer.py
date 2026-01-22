@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 import logging
 from abc import ABCMeta, abstractmethod
-from enum import Enum
 from functools import partial
 from typing import Any, Optional, Tuple
 
@@ -349,21 +348,37 @@ class AffineQuantizedMSEObserver(AffineQuantizedObserverBase):
         )
 
 
+# TODO: Build enum backend for more observers like AWQObserver, PerChannelHistogramObserver
 class ObservedLinear(torch.nn.Linear):
     """
     A linear module with an observer for static quantization.
 
-    This module wraps a linear layer and adds an observer (e.g.,
-    AWQObserver) that collects statistics during calibration.
-    After calibration, use `quantize_` with a config
-    (step="convert") to convert a quantized module.
+    This module wraps a linear layer and adds an observer that collects
+    statistics during calibration. After calibration, use `quantize_`
+    with subclass to convert to a quantized module.
+
+    Example usage:
+        # Step 1: PREPARE - Insert observers into the model
+        model = torch.nn.Sequential(torch.nn.Linear(64, 128, dtype=torch.bfloat16, device="cuda"))
+        quantize_(model, Int8StaticActivationInt8WeightConfig(step="prepare", granularity=PerRow()))
+
+        # Step 2: CALIBRATE - Run calibration data to collect activation statistics
+        for _ in range(10):
+            calibration_input = torch.randn(32, 64, dtype=torch.bfloat16, device="cuda")
+            model(calibration_input)
+
+        # Step 3: CONVERT - Convert observers to quantized layers
+        quantize_(model, Int8StaticActivationInt8WeightConfig(step="convert"))
+
+        # Step 4: INFERENCE - Use the quantized model
+        output = model(torch.randn(32, 64, dtype=torch.bfloat16, device="cuda"))
     """
 
     def __init__(
         self,
         in_features: int,
         out_features: int,
-        act_obs: torch.nn.Module,
+        act_obs: "AffineQuantizedMinMaxObserver",
         bias: bool = True,
         device=None,
         dtype=None,
@@ -381,7 +396,7 @@ class ObservedLinear(torch.nn.Linear):
     def from_float(
         cls,
         float_linear: torch.nn.Linear,
-        act_obs: torch.nn.Module,
+        act_obs: "AffineQuantizedMinMaxObserver",
     ) -> "ObservedLinear":
         """Create an observed linear from a float linear module."""
         observed_linear = cls(
@@ -395,11 +410,3 @@ class ObservedLinear(torch.nn.Linear):
         observed_linear.weight = float_linear.weight
         observed_linear.bias = float_linear.bias
         return observed_linear
-
-
-class StaticObserver(Enum):
-    """Observer types for static quantization calibration."""
-
-    MINMAX = "affine"  # AffineQuantizedMinMaxObserver
-    AWQ = "awq"  # AWQObserver
-    SMOOTHQUANT = "smoothquant"  # SmoothQuantObserver

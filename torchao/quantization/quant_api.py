@@ -74,7 +74,6 @@ from torchao.quantization.linear_activation_weight_observed_tensor import (
 from torchao.quantization.observer import (
     AffineQuantizedObserverBase,
     ObservedLinear,
-    StaticObserver,
 )
 from torchao.quantization.quantize_.common import (
     KernelPreference,
@@ -1185,8 +1184,8 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
     """
     Configuration for applying int8 static symmetric quantization to both activation and weight.
 
-    This uses an observer-based flow following the AWQ pattern:
-        - Use step="prepare" to insert observers
+    This uses an observer-based flow:
+        - Use step="prepare" to insert observers (AffineQuantizedMinMaxObserver)
         - Calibrate with representative data
         - Use step="convert" to convert to quantized model
 
@@ -1194,7 +1193,6 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
         act_quant_step (str): Specifies the step for the observer-based quantization process.
             "prepare": insert observers to linear modules
             "convert": convert the observed linear modules to linear modules with quantized weights
-        observer (StaticObserver): Type of observer to use for calibration.
         granularity (Granularity): The granularity of quantization. PerRow() and PerTensor() are supported currently
         act_mapping_type (MappingType): The mapping type for activation quantization. only SYMMETRIC is supported currently
         set_inductor_config (bool): if True, adjusts `torchinductor` settings to recommended values.
@@ -1203,8 +1201,7 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
     Example:
         # Step 1: Prepare model by inserting observers
         quantize_(model, Int8StaticActivationInt8WeightConfig(
-            step="prepare",
-            observer=StaticObserver.AWQ
+            step="prepare"
         ))
 
         # Step 2: Calibrate with representative data
@@ -1216,7 +1213,6 @@ class Int8StaticActivationInt8WeightConfig(AOBaseConfig):
     """
 
     step: str
-    observer: StaticObserver = StaticObserver.MINMAX
     granularity: Granularity = PerRow()
     act_mapping_type: Optional[MappingType] = MappingType.SYMMETRIC
     act_quant_scale: Optional[torch.Tensor] = None
@@ -1271,34 +1267,17 @@ def _int8_static_activation_int8_weight_transform(
     granularity = config.granularity
 
     if step == "prepare":
-        # PREPARE step: Create observer based on observer enum and wrap linear
-        if config.observer == StaticObserver.MINMAX:
-            from torchao.quantization.observer import AffineQuantizedMinMaxObserver
+        # PREPARE step: Create AffineQuantizedMinMaxObserver and wrap linear
+        from torchao.quantization.observer import AffineQuantizedMinMaxObserver
 
-            observer = AffineQuantizedMinMaxObserver(
-                mapping_type=config.act_mapping_type,
-                target_dtype=torch.int8,
-                granularity=granularity,
-                eps=torch.finfo(torch.float32).eps,
-                scale_dtype=torch.float32,
-                zero_point_dtype=torch.int8,
-            )
-        elif config.observer == StaticObserver.AWQ:
-            from torchao.prototype.awq.core import AWQObserver
-
-            observer = AWQObserver(
-                weight=module.weight,
-                bias=module.bias,
-                base_config=config,
-            )
-        elif config.observer == StaticObserver.SMOOTHQUANT:
-            from torchao.prototype.smoothquant.core import SmoothQuantObserver
-
-            observer = SmoothQuantObserver(
-                weight=module.weight,
-            )
-        else:
-            raise ValueError(f"Unsupported observer type: {config.observer}")
+        observer = AffineQuantizedMinMaxObserver(
+            mapping_type=config.act_mapping_type,
+            target_dtype=torch.int8,
+            granularity=granularity,
+            eps=torch.finfo(torch.float32).eps,
+            scale_dtype=torch.float32,
+            zero_point_dtype=torch.int8,
+        )
 
         return ObservedLinear.from_float(module, observer)
 

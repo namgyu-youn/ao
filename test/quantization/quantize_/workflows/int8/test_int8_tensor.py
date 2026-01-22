@@ -19,7 +19,7 @@ from torchao.quantization import (
     quantize_,
 )
 from torchao.quantization.granularity import PerRow, PerTensor
-from torchao.quantization.observer import ObservedLinear, StaticObserver
+from torchao.quantization.observer import ObservedLinear
 from torchao.quantization.quant_primitives import MappingType
 from torchao.quantization.utils import compute_error, get_block_size
 from torchao.testing.model_architectures import ToyTwoLinearModel
@@ -245,10 +245,8 @@ class TestInt8Tensor(TorchAOIntegrationTestCase):
             weight_cpu.dequantize(), weight_pinned.dequantize(), atol=0, rtol=0
         )
 
-    # TODO: fix , StaticObserver.AWQ, StaticObserver.SMOOTHQUANT
     @common_utils.parametrize("granularity", [PerRow()])
-    @common_utils.parametrize("observer", [StaticObserver.MINMAX])
-    def test_static_quantization(self, granularity, observer):
+    def test_static_quantization(self, granularity):
         """Test observer-based static quantization: prepare -> calibrate -> convert"""
         M, K, N = 32, 64, 32
         model = ToyTwoLinearModel(K, N, K, dtype=torch.bfloat16, device="cuda").eval()
@@ -257,7 +255,7 @@ class TestInt8Tensor(TorchAOIntegrationTestCase):
         quantize_(
             model,
             Int8StaticActivationInt8WeightConfig(
-                step="prepare", observer=observer, granularity=granularity
+                step="prepare", granularity=granularity
             ),
         )
 
