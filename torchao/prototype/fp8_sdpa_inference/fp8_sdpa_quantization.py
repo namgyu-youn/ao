@@ -15,6 +15,11 @@ import torch
 import triton
 import triton.language as tl
 
+from torchao.quantization.quant_primitives import (
+    _choose_scale_float8,
+    _quantize_affine_float8,
+)
+
 # =============================================================================
 # Parallelized version: Better SM utilization by splitting work across chunks
 # =============================================================================
@@ -883,3 +888,87 @@ def fp8_sdpa_quantize_func(
         q_fp8, q_descale = q_quantize_func(q, num_chunks)
         k_fp8, v_fp8, k_descale, v_descale = kv_quantize_func(k, v, num_chunks)
         return q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale
+
+
+# =============================================================================
+# Alternative implementation using shared quant_primitives
+# =============================================================================
+
+
+def fp8_sdpa_quantize_simple(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    float8_dtype: torch.dtype = torch.float8_e4m3fn,
+) -> Tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    """
+    Simple per-head FP8 quantization using shared quant_primitives.
+
+    This is an alternative to the Triton-based fp8_sdpa_quantize_func that
+    reuses torchao.quantization.quant_primitives for scale computation.
+
+    Benefits:
+    - Code reuse: Uses _choose_scale_float8 from quant_primitives
+    - Consistency: Same FP8 scale logic across all torchao quantization
+    - Simpler: No manual chunking or Triton kernel management
+    - Portable: Works without Triton (useful for testing/debugging)
+
+    Note: May be slower than Triton implementation for small batch sizes.
+
+    Args:
+        q: Query tensor of shape (B, H, Sq, D)
+        k: Key tensor of shape (B, H, Skv, D)
+        v: Value tensor of shape (B, H, Skv, D)
+        float8_dtype: Target FP8 dtype (default: torch.float8_e4m3fn)
+
+    Returns:
+        Tuple of (q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale)
+        Descale factors have shape (B, H) for per-head quantization
+    """
+    B_q, H_q, Sq, D_q = q.shape
+    B_k, H_k, Skv, D_k = k.shape
+
+    # Per-head quantization: block_size [1, 1, S, D] reduces over S and D
+    # Result: one scale per (B, H) head
+
+    # Quantize Q using shared primitives
+    q_scale = _choose_scale_float8(
+        tensor=q,
+        block_size=[1, 1, Sq, D_q],
+        float8_dtype=float8_dtype,
+        scale_dtype=torch.float32,
+    )
+    q_fp8 = _quantize_affine_float8(q, q_scale, float8_dtype)
+
+    # Quantize K
+    k_scale = _choose_scale_float8(
+        tensor=k,
+        block_size=[1, 1, Skv, D_k],
+        float8_dtype=float8_dtype,
+        scale_dtype=torch.float32,
+    )
+    k_fp8 = _quantize_affine_float8(k, k_scale, float8_dtype)
+
+    # Quantize V
+    v_scale = _choose_scale_float8(
+        tensor=v,
+        block_size=[1, 1, Skv, D_k],
+        float8_dtype=float8_dtype,
+        scale_dtype=torch.float32,
+    )
+    v_fp8 = _quantize_affine_float8(v, v_scale, float8_dtype)
+
+    # Compute descales (1 / scale = amax / fp8_max)
+    fp8_max = torch.finfo(float8_dtype).max
+    q_descale = fp8_max / q_scale  # Shape: (B, H)
+    k_descale = fp8_max / k_scale  # Shape: (B, H)
+    v_descale = fp8_max / v_scale  # Shape: (B, H)
+
+    return q_fp8, k_fp8, v_fp8, q_descale, k_descale, v_descale
