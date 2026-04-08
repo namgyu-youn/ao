@@ -165,7 +165,7 @@ def scaled_int8_mm(
     assert A.dtype is torch.int8 and B.dtype is torch.int8
     assert row_scale.dtype is col_scale.dtype
     assert A.shape[1] == B.shape[0]
-    assert row_scale.squeeze().shape == (A.shape[0],)
+    assert row_scale.reshape(-1).shape == (A.shape[0],)
     assert col_scale.squeeze().shape in ((B.shape[1],), ())
     assert row_scale.is_contiguous()
     assert col_scale.is_contiguous()
