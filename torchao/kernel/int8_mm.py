@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 # TODO: might merge this with torchao/kernel/intmm_triton.py
 
+from typing import Optional
+
 import torch
 import triton
 import triton.language as tl
@@ -58,7 +60,16 @@ configs = [
 ]
 
 
-@triton.autotune(configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk"])
+_TORCH_TO_TRITON_DTYPE = {
+    torch.float16: tl.float16,
+    torch.bfloat16: tl.bfloat16,
+    torch.float32: tl.float32,
+}
+
+
+@triton.autotune(
+    configs=configs, key=["M", "N", "K", "stride_ak", "stride_bk", "OUTPUT_DTYPE"]
+)
 @triton.heuristics({"EVEN_K": lambda args: args["K"] % args["BLOCK_K"] == 0})
 @triton.jit
 def _scaled_int8_mm_kernel(
@@ -82,6 +93,7 @@ def _scaled_int8_mm_kernel(
     GROUP_M: tl.constexpr = 8,
     EVEN_K: tl.constexpr = True,
     COL_SCALE_SCALAR: tl.constexpr = False,
+    OUTPUT_DTYPE: tl.constexpr = tl.float32,
 ):
     # based on triton.ops.matmul
     pid = tl.program_id(0)
@@ -132,16 +144,20 @@ def _scaled_int8_mm_kernel(
 
     # inductor generates a suffix
     xindex = idx_m * stride_cm + idx_n * stride_cn
-    tl.store(C_ptr + tl.broadcast_to(xindex, mask.shape), acc, mask)
+    tl.store(C_ptr + tl.broadcast_to(xindex, mask.shape), acc.to(OUTPUT_DTYPE), mask)
 
 
 lib.define(
-    "scaled_int8_mm(Tensor A, Tensor B, Tensor A_scale, Tensor B_scale) -> Tensor"
+    "scaled_int8_mm(Tensor A, Tensor B, Tensor A_scale, Tensor B_scale, ScalarType? output_dtype=None) -> Tensor"
 )
 
 
 def scaled_int8_mm(
-    A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor
+    A: Tensor,
+    B: Tensor,
+    row_scale: Tensor,
+    col_scale: Tensor,
+    output_dtype: Optional[torch.dtype] = None,
 ) -> Tensor:
     """Compute `(A @ B) * row_scale * col_scale`, where `A` and `B` are INT8 to utilize
     INT8 tensor cores. `col_scale` can be a scalar.
@@ -153,19 +169,39 @@ def scaled_int8_mm(
     assert col_scale.squeeze().shape in ((B.shape[1],), ())
     assert row_scale.is_contiguous()
     assert col_scale.is_contiguous()
-    return torch.ops.torchao.scaled_int8_mm(A, B, row_scale, col_scale)
+    if output_dtype is None:
+        output_dtype = row_scale.dtype
+    return torch.ops.torchao.scaled_int8_mm(A, B, row_scale, col_scale, output_dtype)
+
+
+# Public stable alias
+int8_mm_dequant = scaled_int8_mm
 
 
 @torch.library.impl(lib, "scaled_int8_mm", "Meta")
-def _(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
-    return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=row_scale.dtype)
+def _(
+    A: Tensor,
+    B: Tensor,
+    row_scale: Tensor,
+    col_scale: Tensor,
+    output_dtype: Optional[torch.dtype] = None,
+):
+    dtype = output_dtype if output_dtype is not None else row_scale.dtype
+    return torch.empty((A.shape[0], B.shape[1]), device=A.device, dtype=dtype)
 
 
 @torch.library.impl(lib, "scaled_int8_mm", "CUDA")
-def scaled_int8_mm_cuda(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tensor):
+def scaled_int8_mm_cuda(
+    A: Tensor,
+    B: Tensor,
+    row_scale: Tensor,
+    col_scale: Tensor,
+    output_dtype: Optional[torch.dtype] = None,
+):
     M, K = A.shape
     _, N = B.shape
-    C = torch.empty(M, N, device=A.device, dtype=row_scale.dtype)
+    dtype = output_dtype if output_dtype is not None else row_scale.dtype
+    C = torch.empty(M, N, device=A.device, dtype=dtype)
     grid = lambda meta: (
         triton.cdiv(meta["M"], meta["BLOCK_M"])
         * triton.cdiv(meta["N"], meta["BLOCK_N"]),
@@ -183,5 +219,6 @@ def scaled_int8_mm_cuda(A: Tensor, B: Tensor, row_scale: Tensor, col_scale: Tens
         *B.stride(),
         *C.stride(),
         COL_SCALE_SCALAR=col_scale.numel() == 1,
+        OUTPUT_DTYPE=_TORCH_TO_TRITON_DTYPE[dtype],
     )
     return C

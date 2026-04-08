@@ -10,7 +10,7 @@ import torch
 from torch.utils._python_dispatch import return_and_correct_aliasing
 
 from torchao.float8.inference import _slice_scale_for_dimension
-from torchao.kernel import int_scaled_matmul
+from torchao.kernel import int_scaled_matmul, scaled_int8_mm
 from torchao.quantization.granularity import (
     Granularity,
     PerRow,
@@ -290,30 +290,45 @@ def _(func, types, args, kwargs):
         w_scales = weight_tensor.scale
 
         tmp = x_vals_int8.reshape(-1, x_vals_int8.shape[-1])
-        # Cast FP16 scale to float to avoid overflow in int_scaled_matmul
+        # Cast FP16 scale to float to avoid overflow
         intermediate_dtype = (
             torch.float if x_scales.dtype == torch.half else x_scales.dtype
         )
-        y_dot_scaled = int_scaled_matmul(
-            tmp, w_vals_int8_t, x_scales.reshape(-1, 1).to(intermediate_dtype)
-        ).to(output_dtype)
 
-        # Asymmetric activation zero_point correction:
-        # Y = (X_int @ W_int^T) * s_x * s_w - zp_x * s_x * row_sum(W_int)^T * s_w
-        # The first term is y_dot_scaled * w_scales. The second is the correction.
-        if (
+        is_asymmetric = (
             weight_tensor.act_quant_kwargs.mapping_type == MappingType.ASYMMETRIC
             and activation_tensor.zero_point is not None
-        ):
+        )
+
+        if is_asymmetric:
+            # Keep old path: zp_correction is applied to y_dot_scaled before w_scales,
+            # so w_scales cannot be fused into the kernel here.
+            y_dot_scaled = int_scaled_matmul(
+                tmp, w_vals_int8_t, x_scales.reshape(-1, 1).to(intermediate_dtype)
+            ).to(output_dtype)
+
+            # Asymmetric activation zero_point correction:
+            # Y = (X_int @ W_int^T) * s_x * s_w - zp_x * s_x * row_sum(W_int)^T * s_w
+            # The first term is y_dot_scaled * w_scales. The second is the correction.
             w_row_sums = weight_tensor.qdata.sum(dim=-1)  # (N,)
             zp_x = activation_tensor.zero_point.reshape(-1, 1).to(intermediate_dtype)
             x_scales_flat = x_scales.reshape(-1, 1).to(intermediate_dtype)
             zp_correction = (zp_x * x_scales_flat) * w_row_sums.to(intermediate_dtype)
             y_dot_scaled = y_dot_scaled - zp_correction.to(output_dtype)
 
-        y = (y_dot_scaled * w_scales.flatten()).reshape(
-            *x_vals_int8.shape[:-1], y_dot_scaled.shape[-1]
-        )
+            y = (y_dot_scaled * w_scales.flatten()).reshape(
+                *x_vals_int8.shape[:-1], y_dot_scaled.shape[-1]
+            )
+        else:
+            # Symmetric path: fuse both scales + output cast into a single kernel call,
+            # collapsing 3 [M,N] buffers to 1.
+            y = scaled_int8_mm(
+                tmp,
+                w_vals_int8_t,
+                x_scales.reshape(-1, 1).to(intermediate_dtype),
+                w_scales.flatten().to(intermediate_dtype),
+                output_dtype=output_dtype,
+            ).reshape(*x_vals_int8.shape[:-1], -1)
 
     else:
         # FP × INT8 (weight-only)
