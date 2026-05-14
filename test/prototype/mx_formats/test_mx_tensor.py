@@ -130,22 +130,13 @@ def test_to_mx_rceil():
         dtype=torch.uint32,
     ).view(torch.float32)
 
-    ground_truth_fp8 = torch.tensor(
-        [
-        127, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
-        ],
-        dtype=torch.uint8,
-    ).view(torch.float8_e4m3fn)
     # fmt: on
     data_mx = MXTensor.to_mx(
         data_hp, torch.float8_e4m3fn, 32, ScaleCalculationMode.RCEIL
     )
     assert torch.isnan(data_mx.scale)
-    assert torch.isnan(data_mx.qdata[0])
-    assert torch.all(data_mx.qdata[1:] == 0)
+    # When any element in block is NaN, entire quantized block becomes NaN
+    assert torch.all(torch.isnan(data_mx.qdata))
     # fp32 denorm
     # fmt: off
     data_hp = torch.tensor(
@@ -339,6 +330,72 @@ def test_exponent_nan_in(elem_dtype):
     tensor_mx = MXTensor.to_mx(tensor_hp, elem_dtype, block_size)
     assert torch.all(torch.isnan(tensor_mx.scale[0]))
     assert not torch.any(torch.isnan(tensor_mx.scale[1:]))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize("elem_dtype", SUPPORTED_ELEM_DTYPES)
+def test_all_nan_blocks(elem_dtype):
+    """
+    Test NaN handling for blocks with all NaN values vs mixed NaN + real values.
+    - Mixed real + NaN: scale = NaN
+    - All NaN: scale = NaN
+    """
+    block_size = 4
+
+    # Test case 1: Mixed NaN + real values
+    mixed_tensor = torch.tensor(
+        [float("nan"), 2.0, float("nan"), 4.0, 1.0, 3.0, 5.0, 2.0],
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    mixed_mx = MXTensor.to_mx(mixed_tensor, elem_dtype, block_size)
+
+    # First block [NaN, 2.0, NaN, 4.0] should have NaN scale
+    assert torch.isnan(mixed_mx.scale[0]), "Mixed NaN+real block should have NaN scale"
+
+    # Second block [1.0, 3.0, 5.0, 2.0] should have real scale
+    assert not torch.isnan(mixed_mx.scale[1]), (
+        "Real-only block should not have NaN scale"
+    )
+
+    # Test case 2: All NaN blocks (should return NaN scale)
+    all_nan_tensor = torch.tensor(
+        [float("nan"), float("nan"), float("nan"), float("nan"), 1.0, 2.0, 3.0, 4.0],
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    all_nan_mx = MXTensor.to_mx(all_nan_tensor, elem_dtype, block_size)
+
+    # First block [NaN, NaN, NaN, NaN] should have NaN scale (matches CUDA/Triton)
+    assert torch.isnan(all_nan_mx.scale[0]), (
+        "All-NaN block should have NaN scale to match CUDA/Triton"
+    )
+    # Second block [1.0, 2.0, 3.0, 4.0] should have real scale
+    assert not torch.isnan(all_nan_mx.scale[1]), (
+        "Real-only block should not have NaN scale"
+    )
+
+    # Test case 3: Completely all NaN tensor
+    completely_nan_tensor = torch.tensor(
+        [
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+            float("nan"),
+        ],
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    completely_nan_mx = MXTensor.to_mx(completely_nan_tensor, elem_dtype, block_size)
+
+    # Both blocks should have NaN scales
+    assert torch.all(torch.isnan(completely_nan_mx.scale)), (
+        "All-NaN tensor should have all NaN scales"
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -612,9 +669,11 @@ def test_index_select():
     not is_sm_at_least_89(),
     reason="float8 in triton requires CUDA capability 8.9 or greater",
 )
+@pytest.mark.skipif(
+    not torch_version_at_least("2.12.0.dev0"),
+    reason="eager float8_e4m3fn casts saturate in PyTorch 2.12+",
+)
 def test_cast_to_float8_e4m3fn_saturation_behavior():
-    # TODO(#1912): make the saturated cast work in eager mode and remove this
-    # test
     max_val = torch.finfo(torch.float8_e4m3fn).max
 
     # create example data inside the representable range
@@ -637,11 +696,13 @@ def test_cast_to_float8_e4m3fn_saturation_behavior():
         device="cuda",
     )
 
-    # verify that in eager mode PyTorch casting to float8 is unsaturated
+    # PyTorch core saturates finite-overflow e4m3fn casts as of
+    # https://github.com/pytorch/pytorch/pull/178817.
     data_in_range_f8 = data_in_range_bf16.to(torch.float8_e4m3fn)
     data_out_of_range_f8 = data_out_of_range_bf16.to(torch.float8_e4m3fn)
     assert not torch.any(torch.isnan(data_in_range_f8))
-    assert torch.all(torch.isnan(data_out_of_range_f8))
+    assert not torch.any(torch.isnan(data_out_of_range_f8))
+    torch.testing.assert_close(data_in_range_f8, data_out_of_range_f8, atol=0, rtol=0)
 
     # verify that in triton, casting to float8 is saturated
     # for simplicity, use torch.compile to generate triton code
