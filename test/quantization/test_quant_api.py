@@ -17,13 +17,14 @@ from torch.testing._internal.common_quantization import TestHelperModules
 from torch.testing._internal.common_utils import TestCase
 
 from torchao import quantize_
-from torchao.dtypes import (
-    AffineQuantizedTensor,
-    PlainLayout,
+from torchao.prototype.mx_formats.inference_workflow import (
+    MXDynamicActivationMXWeightConfig,
+    NVFP4DynamicActivationNVFP4WeightConfig,
 )
 from torchao.quantization import (
     Float8Tensor,
     Int4TilePackedTo4dTensor,
+    Int8Tensor,
     IntxUnpackedToInt8Tensor,
     PerGroup,
 )
@@ -34,19 +35,18 @@ from torchao.quantization.qat import (
 )
 from torchao.quantization.quant_api import (
     Float8DynamicActivationFloat8WeightConfig,
+    Float8DynamicActivationInt4WeightConfig,
     Float8WeightOnlyConfig,
     FqnToConfig,
-    GemliteUIntXWeightOnlyConfig,
     Int4WeightOnlyConfig,
     Int8DynamicActivationInt8WeightConfig,
     Int8DynamicActivationIntxWeightConfig,
+    Int8StaticActivationInt8WeightConfig,
     Int8WeightOnlyConfig,
     IntxWeightOnlyConfig,
     ModuleFqnToConfig,
     PerRow,
     PerTensor,
-    Quantizer,
-    TwoStepQuantizer,
     _replace_with_custom_fn_if_matches_filter,
 )
 from torchao.quantization.quant_primitives import MappingType
@@ -58,17 +58,13 @@ from torchao.testing.pt2e._xnnpack_quantizer import (
 from torchao.testing.utils import skip_if_rocm, skip_if_xpu
 from torchao.utils import (
     get_current_accelerator_device,
+    is_ROCM,
     is_sm_at_least_89,
     is_sm_at_least_90,
+    is_sm_at_least_100,
+    torch_version_at_least,
     unwrap_tensor_subclass,
 )
-
-try:
-    import gemlite  # noqa: F401
-
-    has_gemlite = True
-except ModuleNotFoundError:
-    has_gemlite = False
 
 
 def dynamic_quant(model, example_inputs):
@@ -92,7 +88,7 @@ def capture_and_prepare(model, example_inputs):
     return m
 
 
-class XNNPackDynamicQuantizer(TwoStepQuantizer):
+class XNNPackDynamicQuantizer:
     def prepare(self, model: torch.nn.Module) -> torch.nn.Module:
         _replace_with_custom_fn_if_matches_filter(
             model,
@@ -112,7 +108,7 @@ class XNNPackDynamicQuantizer(TwoStepQuantizer):
         return model
 
 
-class TorchCompileDynamicQuantizer(Quantizer):
+class TorchCompileDynamicQuantizer:
     def quantize(self, model: torch.nn.Module) -> torch.nn.Module:
         quantize_(model, Int8DynamicActivationInt8WeightConfig())
         return model
@@ -164,6 +160,8 @@ class TestQuantFlow(TestCase):
     )
 
     def test_dynamic_quant_gpu_singleline(self):
+        if is_ROCM():
+            self.skipTest("Don't test CPU for ROCM version of torch")
         m = ToyLinearModel().eval()
         example_inputs = m.example_inputs()
         quantize_(m, Int8DynamicActivationInt8WeightConfig())
@@ -345,7 +343,6 @@ class TestQuantFlow(TestCase):
             Float8DynamicActivationFloat8WeightConfig(),
             Int8DynamicActivationInt8WeightConfig(),
             Int8WeightOnlyConfig(),
-            GemliteUIntXWeightOnlyConfig(),
         ],
     )
     @skip_if_xpu("XPU enablement in progress")
@@ -363,12 +360,8 @@ class TestQuantFlow(TestCase):
             and not is_sm_at_least_89()
         ):
             return unittest.skip("requires CUDA capability 8.9 or greater")
-        elif isinstance(config, GemliteUIntXWeightOnlyConfig) and not has_gemlite:
-            return unittest.skip("gemlite not available")
 
         dtype = torch.bfloat16
-        if isinstance(config, GemliteUIntXWeightOnlyConfig):
-            dtype = torch.float16
 
         # set up inputs
         device = get_current_accelerator_device()
@@ -400,8 +393,7 @@ class TestQuantFlow(TestCase):
         quantize_(model, config, filter_fn=None)
         model(*example_inputs)
         assert isinstance(model.linear1.weight, Float8Tensor)
-        assert isinstance(model.linear2.weight, AffineQuantizedTensor)
-        assert isinstance(model.linear2.weight._layout, PlainLayout)
+        assert isinstance(model.linear2.weight, IntxUnpackedToInt8Tensor)
 
     @unittest.skipIf(not torch.accelerator.is_available(), "Need GPU available")
     @unittest.skipIf(not is_sm_at_least_89(), "Need SM 8.9+")
@@ -415,8 +407,7 @@ class TestQuantFlow(TestCase):
         quantize_(model, config, filter_fn=None)
         model(*example_inputs)
         assert isinstance(model.linear1.weight, Float8Tensor)
-        assert isinstance(model.linear2.weight, AffineQuantizedTensor)
-        assert isinstance(model.linear2.weight._layout, PlainLayout)
+        assert isinstance(model.linear2.weight, IntxUnpackedToInt8Tensor)
 
     @unittest.skipIf(not torch.cuda.is_available(), "Need CUDA available")
     def test_module_fqn_to_config_regex_basic(self):
@@ -982,8 +973,8 @@ class TestFqnToConfig(TestCase):
         )
         quantize_(m, quant_config, filter_fn=None)
 
-        assert isinstance(m.nested.linear.weight, AffineQuantizedTensor)
-        assert isinstance(m.linear1.weight, AffineQuantizedTensor)
+        assert isinstance(m.nested.linear.weight, Int8Tensor)
+        assert isinstance(m.linear1.weight, Int8Tensor)
 
     @unittest.skipIf(not torch.accelerator.is_available(), "Need GPU available")
     def test_fqn_config_quantized_nested_module_module_swap(self):
@@ -1033,8 +1024,46 @@ class TestFqnToConfig(TestCase):
         )
         quantize_(m, quant_config, filter_fn=None)
 
-        assert isinstance(m.nested.linear.weight, AffineQuantizedTensor)
-        assert isinstance(m.linear1.weight, AffineQuantizedTensor)
+        assert isinstance(m.nested.linear.weight, Int8Tensor)
+        assert isinstance(m.linear1.weight, Int8Tensor)
+
+    def test_fqn_to_config_non_weight_param(self):
+        configs = [
+            Int4WeightOnlyConfig(group_size=128),
+            Float8DynamicActivationInt4WeightConfig(),
+            Int8WeightOnlyConfig(),
+            Int8DynamicActivationInt8WeightConfig(),
+            Int8DynamicActivationIntxWeightConfig(),
+            Int8StaticActivationInt8WeightConfig(),
+            IntxWeightOnlyConfig(),
+            Float8WeightOnlyConfig(),
+            Float8DynamicActivationFloat8WeightConfig(granularity=PerTensor()),
+        ]
+        if is_sm_at_least_100():
+            configs.append(MXDynamicActivationMXWeightConfig())
+        if is_sm_at_least_100() and torch_version_at_least("2.8.0"):
+            configs.append(NVFP4DynamicActivationNVFP4WeightConfig())
+        for config in configs:
+            with self.subTest(config=type(config).__name__):
+                model = torch.nn.Sequential(
+                    torch.nn.Linear(128, 128).to(torch.bfloat16).cuda()
+                )
+                model[0].register_parameter(
+                    "custom_param",
+                    torch.nn.Parameter(
+                        torch.randn(128, 128, dtype=torch.bfloat16, device="cuda")
+                    ),
+                )
+                original_custom_param = model[0].custom_param
+                original_weight = model[0].weight
+                quant_config = FqnToConfig({"0.custom_param": config})
+                quantize_(model, quant_config, filter_fn=None)
+                assert model[0].custom_param is not original_custom_param, (
+                    f"custom_param should be quantized for {type(config).__name__}"
+                )
+                assert model[0].weight is original_weight, (
+                    f"weight should be unchanged for {type(config).__name__}"
+                )
 
     def test_fqn_config_module_config_and_fqn_config_both_specified(self):
         with self.assertRaises(ValueError):

@@ -49,6 +49,8 @@ from torchao.utils import (
 
 if _is_mslk_available():
     import mslk.conv  # noqa: F401
+    import mslk.gemm  # noqa: F401  # registers fake/meta kernels for mslk gemm ops
+    import mslk.quantize.triton.fp8_quantize  # noqa: F401  # registers fake/meta kernels for triton quantize ops
 
 __all__ = [
     "Float8Tensor",
@@ -253,6 +255,24 @@ class Float8Tensor(TorchAOBaseTensor):
 
 implements = Float8Tensor.implements
 implements_torch_function = Float8Tensor.implements_torch_function
+
+
+@implements(aten.embedding.default)
+def _(func, types, args, kwargs):
+    # aten.embedding.default arg order: (weight, indices, ...)
+    weight_tensor, indices = args[0], args[1]
+    assert isinstance(weight_tensor, Float8Tensor)
+    weight_tensor = weight_tensor.dequantize()
+    return aten.embedding.default(weight_tensor, indices, **kwargs)
+
+
+@implements_torch_function(torch.nn.functional.embedding)
+def _(func, types, args, kwargs):
+    # F.embedding arg order: (indices, weight, ...)
+    indices, weight_tensor = args[0], args[1]
+    assert isinstance(weight_tensor, Float8Tensor)
+    weight_tensor = weight_tensor.dequantize()
+    return torch.nn.functional.embedding(indices, weight_tensor, **kwargs)
 
 
 @implements(aten.linear.default)
@@ -882,7 +902,7 @@ def _(func, types, args, kwargs):
         )
         qdata = self.qdata.reshape(*size)
         scale_shape = []
-        for i in range(3):
+        for i in range(len(size)):
             scale_shape.append(qdata.shape[i] // self.block_size[i])
         scale = self.scale.reshape(*scale_shape)
         block_size = self.block_size
