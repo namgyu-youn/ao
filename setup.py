@@ -523,12 +523,12 @@ def get_extensions():
         "-DNDEBUG" if not debug_mode else "-DDEBUG",
         "-O3" if not debug_mode else "-O0",
         "-t=0",
-        "-std=c++17",
+        "-std=c++20",
     ]
     rocm_args = [
         "-DNDEBUG" if not debug_mode else "-DDEBUG",
         "-O3" if not debug_mode else "-O0",
-        "-std=c++17",
+        "-std=c++20",
     ]
     maybe_hipify_v2_flag = []
     if use_rocm and detect_hipify_v2():
@@ -756,11 +756,16 @@ def get_extensions():
             os.path.join(mxfp8_extension_dir, "mxfp8_extension.cpp"),
             os.path.join(mxfp8_extension_dir, "mxfp8_cuda.cu"),
             os.path.join(mxfp8_extension_dir, "mx_block_rearrange_2d_M_groups.cu"),
+            os.path.join(mxfp8_extension_dir, "fused_pad_token_groups.cu"),
         ]
 
         # Only add the extension if the source files exist AND we are building for sm100
         mxfp8_src_files_exist = all(os.path.exists(f) for f in mxfp8_sources)
-        if mxfp8_src_files_exist and build_for_sm100a:
+        if (
+            mxfp8_src_files_exist
+            and build_for_sm100a
+            and _torch_version_at_least("2.11.0")
+        ):
             print("Building mxfp8_cuda extension")
             ext_modules.append(
                 CUDAExtension(
@@ -772,13 +777,18 @@ def get_extensions():
                     extra_compile_args={
                         "cxx": [
                             f"-DPy_LIMITED_API={min_supported_cpython_hexcode}",
-                            "-std=c++17",
+                            "-std=c++20",
                             "-O3",
+                            "-DUSE_CUDA",
+                            # define TORCH_TARGET_VERSION with min version 2.11 for ABI stable Float8_e8m0fnu
+                            "-DTORCH_TARGET_VERSION=0x020b000000000000",
                         ],
                         "nvcc": nvcc_args
                         + [
                             "-gencode=arch=compute_100,code=sm_100",
                             "-gencode=arch=compute_120,code=compute_120",
+                            "-DUSE_CUDA",
+                            "-DTORCH_TARGET_VERSION=0x020b000000000000",
                         ],
                     },
                 ),

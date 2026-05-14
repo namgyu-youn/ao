@@ -16,6 +16,7 @@ from torchao.quantization.granularity import (
     PerRow,
 )
 from torchao.quantization.quant_primitives import (
+    _DTYPE_TO_QVALUE_BOUNDS,
     MappingType,
     choose_qparams_affine,
     dequantize_affine,
@@ -26,7 +27,10 @@ from torchao.quantization.quantize_.common import (
     _choose_quant_func_and_quantize_tensor,
 )
 from torchao.quantization.utils import get_block_size
-from torchao.utils import TorchAOBaseTensor, fill_defaults
+from torchao.utils import (
+    TorchAOBaseTensor,
+    fill_defaults,
+)
 
 __all__ = [
     "Int8Tensor",
@@ -42,33 +46,42 @@ class QuantizeTensorToInt8Kwargs(QuantizeTensorKwargs):
 
     Args:
         granularity: the granularity for the Tensor, currently either PerRow() or PerTensor()
-        mapping_type: whether to use symmetric or asymmetric quant, only symmetric is supported currently
+        mapping_type: whether to use symmetric or asymmetric quant
+        reduce_range: reduce int8 quantization range to avoid overflow on CPU without VNNI support.
+            Users can call should_reduce_range() to help determine.
     """
 
     granularity: Granularity
     mapping_type: MappingType = MappingType.SYMMETRIC
+    reduce_range: bool = False
 
 
 class Int8Tensor(TorchAOBaseTensor):
     """
     int8 quantized tensor with plain layout.
 
-    Currently only Symmetric quantization is supported.
-
     Tensor Attributes:
         qdata: (N, K) or (B, N, K) int8 quantized weight data (2D or 3D)
         scale: scale factors for dequantization
+        zero_point: zero point for asymmetric quantization (None for symmetric)
 
     Non-Tensor Attributes:
         granularity: the granularity for quantization (e.g., PerRow(), PerTensor())
         act_quant_kwargs: flags for dynamic activation quantization
+        reduce_range: optional flag for reduced int8 quantization range.
     """
 
     tensor_data_names = ["qdata", "scale"]
-    optional_tensor_data_names = ["act_quant_scale", "act_pre_scale"]
+    optional_tensor_data_names = [
+        "zero_point",
+        "act_quant_scale",
+        "act_quant_zero_point",
+        "act_pre_scale",
+    ]
     tensor_attribute_names = ["block_size", "dtype"]
     optional_tensor_attribute_names = [
         "act_quant_kwargs",
+        "reduce_range",
     ]
 
     def __new__(
@@ -77,9 +90,12 @@ class Int8Tensor(TorchAOBaseTensor):
         scale: torch.Tensor,
         block_size: List[int],
         dtype: torch.dtype,
+        zero_point: Optional[torch.Tensor] = None,
         act_quant_scale: Optional[torch.Tensor] = None,
+        act_quant_zero_point: Optional[torch.Tensor] = None,
         act_pre_scale: Optional[torch.Tensor] = None,
         act_quant_kwargs: Optional[QuantizeTensorToInt8Kwargs] = None,
+        reduce_range: Optional[bool] = False,
     ):
         kwargs = {
             "device": qdata.device,
@@ -94,18 +110,24 @@ class Int8Tensor(TorchAOBaseTensor):
         scale: torch.Tensor,
         block_size: List[int],
         dtype: torch.dtype,
+        zero_point: Optional[torch.Tensor] = None,
         act_quant_scale: Optional[torch.Tensor] = None,
+        act_quant_zero_point: Optional[torch.Tensor] = None,
         act_pre_scale: Optional[torch.Tensor] = None,
         act_quant_kwargs: Optional[QuantizeTensorToInt8Kwargs] = None,
+        reduce_range: Optional[bool] = False,
     ):
         super().__init__()
         self.qdata = qdata
         self.scale = scale
         self.block_size = block_size
+        self.zero_point = zero_point
         # don't set dtype because this gets done in __new__
         self.act_quant_kwargs = act_quant_kwargs
         self.act_quant_scale = act_quant_scale
+        self.act_quant_zero_point = act_quant_zero_point
         self.act_pre_scale = act_pre_scale
+        self.reduce_range = reduce_range
 
     def __repr__(self):
         return (
@@ -113,12 +135,15 @@ class Int8Tensor(TorchAOBaseTensor):
             f"act_quant_kwargs={self.act_quant_kwargs}, "
             f"qdata={self.qdata}, "
             f"scale={self.scale}, "
+            f"zero_point={self.zero_point}, "
             f"act_quant_scale={self.act_quant_scale}, "
+            f"act_quant_zero_point={self.act_quant_zero_point}, "
             f"act_pre_scale={self.act_pre_scale}, "
             f"block_size={self.block_size}, "
             f"shape={self.shape}, "
             f"device={self.device}, "
-            f"dtype={self.dtype})"
+            f"dtype={self.dtype}, "
+            f"reduce_range={self.reduce_range})"
         )
 
     @classmethod
@@ -127,7 +152,6 @@ class Int8Tensor(TorchAOBaseTensor):
         granularity: Optional[
             Union[
                 Granularity,
-                Tuple[Granularity, Granularity],
                 list[Granularity],
             ]
         ],
@@ -136,17 +160,17 @@ class Int8Tensor(TorchAOBaseTensor):
             return (PerRow(), PerRow())
         elif isinstance(granularity, Granularity):
             return (granularity, granularity)
-        elif isinstance(granularity, (tuple, list)):
+        elif isinstance(granularity, list):
             if len(granularity) == 2:
                 return tuple(granularity)
             else:
                 raise ValueError(
-                    f"Granularity tuple/list must have exactly 2 elements, got {len(granularity)}: {granularity}"
+                    f"Granularity list must have exactly 2 elements, got {len(granularity)}: {granularity}"
                 )
         else:
             raise ValueError(
                 f"Invalid granularity type: {granularity}. "
-                f"Expected None, Granularity, or tuple/list of 2 Granularities."
+                f"Expected None, Granularity, or list of 2 Granularities."
             )
 
     @classmethod
@@ -156,13 +180,20 @@ class Int8Tensor(TorchAOBaseTensor):
         granularity: Granularity,
         mapping_type=MappingType.SYMMETRIC,
         scale: Optional[torch.Tensor] = None,
+        zero_point: Optional[torch.Tensor] = None,
         act_quant_kwargs: Optional[QuantizeTensorToInt8Kwargs] = None,
         act_quant_scale: Optional[torch.Tensor] = None,
+        act_quant_zero_point: Optional[torch.Tensor] = None,
         act_pre_scale: Optional[torch.Tensor] = None,
+        reduce_range: Optional[bool] = False,
     ):
         """Create Int8Tensor from high-precision tensor"""
         block_size = get_block_size(hp_tensor.shape, granularity)
         block_size = list(block_size)
+
+        quant_min, quant_max = _DTYPE_TO_QVALUE_BOUNDS[torch.int8]
+        if reduce_range:
+            quant_min, quant_max = quant_min // 2, quant_max // 2
 
         if scale is None:
             scale, zero_point = choose_qparams_affine(
@@ -170,9 +201,9 @@ class Int8Tensor(TorchAOBaseTensor):
                 mapping_type=mapping_type,
                 block_size=block_size,
                 target_dtype=torch.int8,
-                quant_min=-128,
-                quant_max=127,
-                scale_dtype=hp_tensor.dtype,
+                quant_min=quant_min,
+                quant_max=quant_max,
+                scale_dtype=torch.float32,
                 zero_point_dtype=torch.int8,
                 keepdim=True,
                 # Use float32 eps for all dtypes to avoid accuracy loss with bfloat16 (bfloat16 eps is ~65x larger).
@@ -185,7 +216,8 @@ class Int8Tensor(TorchAOBaseTensor):
                 (hp_tensor.shape[i] // block_size[i]) == scale.shape[i]
                 for i in range(hp_tensor.ndim)
             )
-            zero_point = torch.zeros_like(scale, dtype=torch.int8)
+            if zero_point is None:
+                zero_point = torch.zeros_like(scale, dtype=torch.int8)
 
         int_data = quantize_affine(
             hp_tensor,
@@ -193,16 +225,26 @@ class Int8Tensor(TorchAOBaseTensor):
             scale=scale,
             zero_point=zero_point,
             output_dtype=torch.int8,
+            quant_min=quant_min,
+            quant_max=quant_max,
         )
+
+        if mapping_type == MappingType.ASYMMETRIC:
+            assert zero_point is not None, (
+                "zero_point must not be None for asymmetric quantization"
+            )
 
         return cls(
             int_data,
             scale,
             block_size,
             hp_tensor.dtype,
+            zero_point=zero_point,
             act_quant_scale=act_quant_scale,
+            act_quant_zero_point=act_quant_zero_point,
             act_pre_scale=act_pre_scale,
             act_quant_kwargs=act_quant_kwargs,
+            reduce_range=reduce_range,
         )
 
     def dequantize(self, output_dtype: Optional[torch.dtype] = None) -> torch.Tensor:
@@ -211,10 +253,8 @@ class Int8Tensor(TorchAOBaseTensor):
             input=self.qdata,
             block_size=self.block_size,
             scale=self.scale,
-            zero_point=None,
+            zero_point=self.zero_point,
             input_dtype=torch.int8,
-            quant_min=-128,
-            quant_max=127,
             output_dtype=output_dtype if output_dtype is not None else self.dtype,
         )
 
@@ -250,6 +290,7 @@ def _(func, types, args, kwargs):
             activation_tensor,
             weight_tensor.act_quant_kwargs,
             scale=weight_tensor.act_quant_scale,
+            zero_point=weight_tensor.act_quant_zero_point,
         )
 
         # 1. do the matrix form of dot(X_i, W_j)
@@ -274,19 +315,43 @@ def _(func, types, args, kwargs):
         y_dot_scaled = int_scaled_matmul(
             tmp, w_vals_int8_t, x_scales.reshape(-1, 1).to(intermediate_dtype)
         ).to(output_dtype)
+
+        # Asymmetric activation zero_point correction:
+        # Y = (X_int @ W_int^T) * s_x * s_w - zp_x * s_x * row_sum(W_int)^T * s_w
+        # The first term is y_dot_scaled * w_scales. The second is the correction.
+        if (
+            weight_tensor.act_quant_kwargs.mapping_type == MappingType.ASYMMETRIC
+            and activation_tensor.zero_point is not None
+        ):
+            w_row_sums = weight_tensor.qdata.sum(dim=-1)  # (N,)
+            zp_x = activation_tensor.zero_point.reshape(-1, 1).to(intermediate_dtype)
+            x_scales_flat = x_scales.reshape(-1, 1).to(intermediate_dtype)
+            zp_correction = (zp_x * x_scales_flat) * w_row_sums.to(intermediate_dtype)
+            y_dot_scaled = y_dot_scaled - zp_correction.to(output_dtype)
+
         y = (y_dot_scaled * w_scales.flatten()).reshape(
             *x_vals_int8.shape[:-1], y_dot_scaled.shape[-1]
         )
 
     else:
         # FP × INT8 (weight-only)
-        w_vals_int8_t = weight_tensor.qdata.t()
-        m = torch.mm(
-            activation_tensor.reshape(-1, activation_tensor.shape[-1]),
-            w_vals_int8_t.to(output_dtype),
-        )
-        y = m * weight_tensor.scale.to(m.dtype).flatten()
-        y = y.reshape(*activation_tensor.shape[:-1], weight_tensor.qdata.shape[0])
+        if weight_tensor.block_size[-1] < weight_tensor.qdata.shape[-1]:
+            # Per-group quantization: dequantize weight, then do FP matmul
+            w_dequant = weight_tensor.dequantize().to(output_dtype)
+            y = torch.mm(
+                activation_tensor.reshape(-1, activation_tensor.shape[-1]),
+                w_dequant.t(),
+            )
+            y = y.reshape(*activation_tensor.shape[:-1], weight_tensor.qdata.shape[0])
+        else:
+            # Per-row or per-tensor: optimized int8 path
+            w_vals_int8_t = weight_tensor.qdata.t()
+            m = torch.mm(
+                activation_tensor.reshape(-1, activation_tensor.shape[-1]),
+                w_vals_int8_t.to(output_dtype),
+            )
+            y = m * weight_tensor.scale.to(m.dtype).flatten()
+            y = y.reshape(*activation_tensor.shape[:-1], weight_tensor.qdata.shape[0])
 
     if bias is not None:
         y += bias
@@ -328,6 +393,16 @@ def _(func, types, args, kwargs):
     for i in range(len(self.block_size)):
         block_size[i] = min(block_size[i], sliced_qdata.shape[i])
 
+    # Slice zero_point the same way as scale
+    sliced_zero_point = None
+    if self.zero_point is not None:
+        if self.zero_point.numel() == 1:
+            sliced_zero_point = self.zero_point
+        else:
+            sliced_zero_point = _slice_scale_for_dimension(
+                self.zero_point, self.qdata.shape, dim, start, end, step
+            )
+
     return return_and_correct_aliasing(
         func,
         args,
@@ -337,9 +412,12 @@ def _(func, types, args, kwargs):
             sliced_scale,
             block_size,
             self.dtype,
+            zero_point=sliced_zero_point,
             act_quant_kwargs=self.act_quant_kwargs,
             act_quant_scale=self.act_quant_scale,
+            act_quant_zero_point=self.act_quant_zero_point,
             act_pre_scale=self.act_pre_scale,
+            reduce_range=self.reduce_range,
         ),
     )
 
@@ -354,11 +432,25 @@ def _(func, types, args, kwargs):
     )
 
 
+@implements(aten.embedding.default)
+def _(func, types, args, kwargs):
+    """Embedding operation for Int8Tensor - dequantize weight and run embedding."""
+    weight, indices = args[0], args[1]
+    # Dequantize the weight and run the embedding on the float weight
+    return aten.embedding.default(weight.dequantize(), indices, *args[2:], **kwargs)
+
+
 @implements(aten.is_pinned.default)
 def _(func, types, args, kwargs):
     is_pinned = args[0].qdata.is_pinned() and args[0].scale.is_pinned()
+    if args[0].zero_point is not None:
+        is_pinned = is_pinned and args[0].zero_point.is_pinned()
     if args[0].act_quant_scale is not None:
         is_pinned = is_pinned and args[0].act_quant_scale.is_pinned()
+    if args[0].act_quant_zero_point is not None:
+        is_pinned = is_pinned and args[0].act_quant_zero_point.is_pinned()
+    if args[0].act_pre_scale is not None:
+        is_pinned = is_pinned and args[0].act_pre_scale.is_pinned()
     return is_pinned
 
 
@@ -367,17 +459,33 @@ def _(func, types, args, kwargs):
     pinned_qdata = args[0].qdata.pin_memory()
     pinned_scale = args[0].scale.pin_memory()
 
+    pinned_zero_point = None
+    if args[0].zero_point is not None:
+        pinned_zero_point = args[0].zero_point.pin_memory()
+
     pinned_act_quant_scale = None
     if args[0].act_quant_scale is not None:
         pinned_act_quant_scale = args[0].act_quant_scale.pin_memory()
+
+    pinned_act_quant_zero_point = None
+    if args[0].act_quant_zero_point is not None:
+        pinned_act_quant_zero_point = args[0].act_quant_zero_point.pin_memory()
+
+    pinned_act_pre_scale = None
+    if args[0].act_pre_scale is not None:
+        pinned_act_pre_scale = args[0].act_pre_scale.pin_memory()
 
     return Int8Tensor(
         pinned_qdata,
         pinned_scale,
         args[0].block_size,
         args[0].dtype,
+        zero_point=pinned_zero_point,
         act_quant_scale=pinned_act_quant_scale,
+        act_quant_zero_point=pinned_act_quant_zero_point,
+        act_pre_scale=pinned_act_pre_scale,
         act_quant_kwargs=args[0].act_quant_kwargs,
+        reduce_range=args[0].reduce_range,
     )
 
 
@@ -392,14 +500,21 @@ def _(func, types, args, kwargs):
     assert len(old_int8_tensor.qdata.shape) == len(old_int8_tensor.block_size), (
         "unsupported"
     )
+    selected_zero_point = None
+    if old_int8_tensor.zero_point is not None:
+        selected_zero_point = old_int8_tensor.zero_point[index]
+
     new_int8_tensor = Int8Tensor(
         old_int8_tensor.qdata[index],
         old_int8_tensor.scale[index],
         old_int8_tensor.block_size[1:],
         old_int8_tensor.dtype,
-        old_int8_tensor.act_quant_scale,
-        old_int8_tensor.act_pre_scale,
-        old_int8_tensor.act_quant_kwargs,
+        zero_point=selected_zero_point,
+        act_quant_scale=old_int8_tensor.act_quant_scale,
+        act_quant_zero_point=old_int8_tensor.act_quant_zero_point,
+        act_pre_scale=old_int8_tensor.act_pre_scale,
+        act_quant_kwargs=old_int8_tensor.act_quant_kwargs,
+        reduce_range=old_int8_tensor.reduce_range,
     )
     return return_and_correct_aliasing(func, args, kwargs, new_int8_tensor)
 
